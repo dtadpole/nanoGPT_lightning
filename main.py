@@ -58,14 +58,14 @@ parser.add_argument('--wd', '--weight-decay', default=0.1, type=float,
 parser.add_argument('--gradient-accumulation-steps', default=40, type=int,
                     metavar='GRADIENT_ACCUMULATION_STEPS', help='gradient accumulation steps')
 # iterations
-parser.add_argument('--warmup-iters', default=2000, type=int,
-                    help='warmup epoch (default: 2000)')
+parser.add_argument('--warmup-iters', default=40000, type=int,
+                    help='warmup epoch (default: 40000)')
 parser.add_argument('--lr-decay-iters', default=600000, type=int,
                     metavar='LR_DECAY_ITERS', help='learning rate decay iterations')
 parser.add_argument('--max-iters', default=600000, type=int,
                     metavar='MAX_ITERS', help='max iterations')
-parser.add_argument('--eval-iters', default=200, type=int,
-                    help='number of iterations to run eval on (default: 200)')
+parser.add_argument('--eval-iters', default=100, type=int,
+                    help='number of iterations to run eval on (default: 100)')
 # dropout
 parser.add_argument('--dropout', default=0.1, type=float, metavar='DROPOUT',
                     help='dropout')
