@@ -21,7 +21,7 @@ args.lr_decay_iters = 600000
 # eval stuff
 args.eval_interval = 200
 args.eval_iters = 400
-args.log_interval = 20
+args.log_interval = 10
 
 # weight decay
 args.weight_decay = 1e-1
