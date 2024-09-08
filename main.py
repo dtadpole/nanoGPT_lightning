@@ -1,11 +1,13 @@
 import argparse
 import os
 import random
+import inspect
 import shutil
 import time
 import math
 import warnings
 from enum import Enum
+import numpy as np
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -25,92 +27,101 @@ from torch.optim.lr_scheduler import StepLR, ExponentialLR, LinearLR, ChainedSch
 from torch.utils.data import Subset
 import lightning as L
 from lightning.fabric.accelerators import find_usable_cuda_devices
+from gpt2 import GPT2, GPTConfig
 
-model_names = sorted(name for name in models.__dict__
-                     if name.islower() and not name.startswith("__")
-                     and callable(models.__dict__[name]))
-
-parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('-d', '--data', metavar='DIR', nargs='?', default='./imagenet/',
-                    help='path to dataset (default: ./imagenet/)')
-parser.add_argument('-a', '--arch', metavar='ARCH', default='vit_b_16',
-                    choices=model_names,
-                    help='model architecture: (default: vit_b_16)')
-parser.add_argument('-j', '--workers', default=5, type=int, metavar='N',
-                    help='number of data loading workers (default: 5)')
-parser.add_argument('--epochs', default=60, type=int, metavar='N',
-                    help='number of total epochs to run')
-parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
-                    help='manual epoch number (useful on restarts)')
-parser.add_argument('--warmup-epoch', default=5, type=float,
-                    help='warmup epoch (default: 5)')
-parser.add_argument('--restart-epoch', default=5, type=float,
-                    help='restart epoch (default: 5)')
-parser.add_argument('-b', '--batch-size', default=256, type=int,
+# parser
+parser = argparse.ArgumentParser(description='PyTorch GPT2 Training')
+parser.add_argument('-d', '--data', metavar='DIR', nargs='?', default='./data/openwebtext/',
+                    help='path to dataset (default: ./data/openwebtext/)')
+parser.add_argument('--config-file', default='./config/train_gpt2.py', type=str, metavar='PATH',
+                    help='path to config file (default: ./config/train_gpt2.py)')
+# batch and block size
+parser.add_argument('-b', '--batch-size', default=12, type=int,
                     metavar='N',
-                    help='mini-batch size (default: 256), this is the total '
+                    help='mini-batch size (default: 12), this is the total '
                          'batch size of all GPUs on the current node when '
                          'using Data Parallel or Distributed Data Parallel')
-parser.add_argument('--lr', '--learning-rate', default=3e-4, type=float,
-                    metavar='LR', help='initial learning rate', dest='lr')
-parser.add_argument('--lr-end', default=1e-5, type=float,
-                    metavar='LREND', help='lr end')
-parser.add_argument('--optimizer', default='AdamW', type=str, metavar='OPT',
-                    help='optimizer [SGD|Adam|AdamW]')
-parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
-                    help='momentum')
-parser.add_argument('--dropout', default=0.1, type=float, metavar='DROPOUT',
-                    help='dropout')
-# parser.add_argument('--stochastic_dropout', default=0.2, type=float,
-#                     help='stochastic dropout (for MaxViT)')
-parser.add_argument('--numops', default=2, type=int,
-                    help='number of ops, default 2')
-parser.add_argument('--magnitude', default=15, type=int,
-                    help="magnitude (default: 15)")
+parser.add_argument('--block-size', default=1024, type=int,
+                    help='block size (default: 1024)')
+# learning rate
+parser.add_argument('--lr', '--learning-rate', default=6e-4, type=float,
+                    metavar='LR', help='initial learning rate', dest='learning_rate')
+parser.add_argument('--min-lr', default=6e-5, type=float,
+                    metavar='min_lr', help='mean learning rate')
 parser.add_argument('--beta1', default=0.9, type=float, metavar='B1',
                     help='beta1')
-parser.add_argument('--beta2', default=0.999, type=float, metavar='B2',
+parser.add_argument('--beta2', default=0.95, type=float, metavar='B2',
                     help='beta2')
-parser.add_argument('--gamma', default=0.9, type=float, metavar='GAMMA',
-                    help='gamma')
 parser.add_argument('--wd', '--weight-decay', default=0.1, type=float,
                     metavar='W', help='weight decay (default: 0.1)',
                     dest='weight_decay')
-parser.add_argument('--scheduler', default='cosineR', type=str,
-                    metavar='N', help='scheduler [step|exp|linear|cosine|cosineR]')
+parser.add_argument('--gradient-accumulation-steps', default=40, type=int,
+                    metavar='GRADIENT_ACCUMULATION_STEPS', help='gradient accumulation steps')
+# iterations
+parser.add_argument('--warmup-iters', default=2000, type=int,
+                    help='warmup epoch (default: 2000)')
+parser.add_argument('--lr-decay-iters', default=600000, type=int,
+                    metavar='LR_DECAY_ITERS', help='learning rate decay iterations')
+parser.add_argument('--max-iters', default=600000, type=int,
+                    metavar='MAX_ITERS', help='max iterations')
+parser.add_argument('--eval-iters', default=200, type=int,
+                    help='number of iterations to run eval on (default: 200)')
+# dropout
+parser.add_argument('--dropout', default=0.1, type=float, metavar='DROPOUT',
+                    help='dropout')
+# amp
 parser.add_argument('--amp', default="bf16-mixed", type=str,
                     metavar='AMP', help='amp mode: [16-mixed|bf16-mixed]')
 parser.add_argument('--compile', action='store_true', help='compile')
-parser.add_argument('--deepspeed', action='store_true', help='deepspeed')
-parser.add_argument('-p', '--print-freq', default=100, type=int,
-                    metavar='N', help='print frequency (default: 100)')
+parser.add_argument('-p', '--log-interval', default=5, type=int,
+                    metavar='N', help='log interval (default: 5)')
 parser.add_argument('-g', '--gpu', default=None, type=str,
                     metavar='GPU', help='gpu (default None)')
-parser.add_argument('--resume', default='', type=str, metavar='PATH',
-                    help='path to latest checkpoint (default: none)')
-parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
-                    help='evaluate model on validation set')
-parser.add_argument('--pretrained', dest='pretrained', action='store_true',
-                    help='use pre-trained model')
-parser.add_argument('--world-size', default=1, type=int,
-                    help='number of nodes for distributed training')
-parser.add_argument('--dummy', action='store_true',
-                    help="use fake data to benchmark")
+
+
+# -----------------------------------------------------------------------------
+args = parser.parse_args()
+if args.config_file:
+    # with open(args.config_file) as f:
+    #     print(f.read())
+    exec(open(args.config_file).read())
+print(args)
+# -----------------------------------------------------------------------------
 
 best_acc1 = 0
 torch.set_float32_matmul_precision('medium')
+
+def configure_optimizers(model, weight_decay, learning_rate, betas):
+    # start with all of the candidate parameters
+    param_dict = {pn: p for pn, p in model.named_parameters()}
+    # filter out those that do not require grad
+    param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+    # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
+    # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
+    decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+    nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+    optim_groups = [
+        {'params': decay_params, 'weight_decay': weight_decay},
+        {'params': nodecay_params, 'weight_decay': 0.0}
+    ]
+    num_decay_params = sum(p.numel() for p in decay_params)
+    num_nodecay_params = sum(p.numel() for p in nodecay_params)
+    print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
+    print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+    # Create AdamW optimizer and use the fused version if it is available
+    fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+    use_fused = fused_available
+    extra_args = dict(fused=True) if use_fused else dict()
+    optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
+    # optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas)
+    print(f"using fused AdamW: {use_fused}")
+    return optimizer
 
 
 def main():
     global best_acc1
 
-    args = parser.parse_args()
-    print(args)
-
-    if args.deepspeed:
-        strategy = "deepspeed_stage_2"
-    else:
-        strategy = "auto"
+    strategy = "auto"
 
     if args.gpu:
         accelerator = "cuda"
@@ -125,366 +136,144 @@ def main():
                       accelerator=accelerator, devices=devices)
     fabric.launch()
 
-    # Data loading code
-    if args.dummy:
-        print("=> Dummy data is used!")
-        train_dataset = datasets.FakeData(
-            1281167, (3, 224, 224), 1000, transforms.ToTensor())
-        val_dataset = datasets.FakeData(
-            50000, (3, 224, 224), 1000, transforms.ToTensor())
-    else:
-        traindir = os.path.join(args.data, 'train')
-        valdir = os.path.join(args.data, 'val')
-        # normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-        #                                  std=[0.229, 0.224, 0.225])
+    # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
+    iter_num = 0
+    best_val_loss = 1e9
 
-        train_dataset = datasets.ImageFolder(
-            traindir,
-            transforms.Compose([
-                transforms.RandAugment(num_ops=args.numops, magnitude=args.magnitude),
-                # v2.MixUp(alpha=0.8, num_classes=1000),
-                # transforms.RandomResizedCrop(224),
-                # transforms.RandomHorizontalFlip(),
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                # normalize,
-            ]))
+    # model
+    model = GPT2(GPTConfig())
+    model = model.cuda()
 
-        val_dataset = datasets.ImageFolder(
-            valdir,
-            transforms.Compose([
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                # normalize,
-            ]))
+    # optimizer
+    optimizer = configure_optimizers(model,
+                                    args.weight_decay,
+                                    args.learning_rate,
+                                    (args.beta1, args.beta2))
 
-    # define loss function (criterion), optimizer, and learning rate scheduler
-    criterion = nn.CrossEntropyLoss()
+    ############################################################
+    # poor man's data loader
+    # train.bin is ~17GB, val.bin ~8.5MB
+    # train has ~9B tokens (9,035,582,198)
+    # val has ~4M tokens (4,434,897)
+    # this came from 8,013,769 documents in total.
+    train_data = np.memmap(os.path.join(args.data, 'train.bin'), dtype=np.uint16, mode='r')
+    val_data = np.memmap(os.path.join(args.data, 'val.bin'), dtype=np.uint16, mode='r')
+    def get_batch(split):
+        data = train_data if split == 'train' else val_data
+        ix = torch.randint(len(data) - args.block_size, (args.batch_size,))
+        x = torch.stack([torch.from_numpy((data[i:i+args.block_size]).astype(np.int64)) for i in ix])
+        y = torch.stack([torch.from_numpy((data[i+1:i+1+args.block_size]).astype(np.int64)) for i in ix])
+        return x, y
 
-    # create model
-    if args.pretrained:
-        print("=> using pre-trained model '{}'".format(args.arch))
-        model = models.__dict__[args.arch](pretrained=True)
-    else:
-        print("=> creating model '{}'".format(args.arch))
-        if args.arch.startswith('vit'):
-            model = models.__dict__[args.arch](dropout=args.dropout, attention_dropout=args.dropout)
-        # elif args.arch.startswith('maxvit'):
-        #     model = models.__dict__[args.arch](stochastic_depth_prob=args.stochastic_dropout)
-        else:
-            model = models.__dict__[args.arch]()
+    # helps estimate an arbitrarily accurate loss over either split using many batches
+    @torch.no_grad()
+    def estimate_loss():
+        out = {}
+        model.eval()
+        for split in ['train', 'val']:
+            losses = torch.zeros(args.eval_iters)
+            for k in range(args.eval_iters):
+                X, Y = get_batch(split)
+                _, loss = model(X, Y)
+                losses[k] = loss.item()
+            out[split] = losses.mean()
+        model.train()
+        return out
 
-
-    if args.optimizer == 'SGD':
-        optimizer = torch.optim.SGD(model.parameters(), args.lr,
-                                    momentum=args.momentum,
-                                    weight_decay=args.weight_decay)
-    elif args.optimizer == 'Adam':
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,
-                                     betas=(args.beta1, args.beta2))
-    elif args.optimizer == 'AdamW':
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
-                                      betas=(args.beta1, args.beta2),
-                                      weight_decay=args.weight_decay)
-    else:
-        raise Exception("unknown optimizer: ${args.optimizer}")
-
-    # iters_per_epoch = math.ceil(len(train_loader) / args.batch_size)
-    iters_per_epoch = math.ceil(
-        len(train_dataset) / args.batch_size / fabric.world_size)
-    print(f'iters_per_epoch: {iters_per_epoch}')
-
-    if args.scheduler == 'step':
-        """Sets the learning rate to the initial LR decayed by 0.9 every 2 epochs"""
-        main_scheduler = StepLR(
-            optimizer, step_size=2*iters_per_epoch, gamma=args.gamma)
-    elif args.scheduler == 'exp':
-        """Sets the learning rate to the initial LR decayed by 0.9 each epoch"""
-        main_scheduler = ExponentialLR(
-            optimizer, gamma=args.gamma)
-    elif args.scheduler == 'linear':
-        """Sets the learning rate to the initial LR and end LR"""
-        main_scheduler = LinearLR(
-            optimizer, start_factor=1.0, end_factor=args.lr_end/args.lr,
-            total_iters=iters_per_epoch*args.epochs)
-    elif args.scheduler == 'cosine':
-        """Sets the learning rate to the initial LR and end LR"""
-        main_scheduler = CosineAnnealingLR(
-            optimizer, iters_per_epoch*(args.epochs-args.warmup_epoch), eta_min=args.lr_end)
-    elif args.scheduler == 'cosineR':
-        """Sets the learning rate to the initial LR and min LR and restart epochs"""
-        main_scheduler = CosineAnnealingWarmRestarts(
-            optimizer, iters_per_epoch*args.restart_epoch, eta_min=args.lr_end)
-    else:
-        raise Exception("unknown scheduler: ${args.scheduler}")
-
-    # warm up with one epoch data
-    warmup_scheduler = LinearLR(optimizer, start_factor=1e-4,
-                                end_factor=1.0, total_iters=math.ceil(iters_per_epoch*args.warmup_epoch))
-    scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler],
-                             milestones=[math.ceil(iters_per_epoch*args.warmup_epoch)])
+    # learning rate decay scheduler (cosine with warmup)
+    def get_lr(it):
+        # 1) linear warmup for warmup_iters steps
+        if it < args.warmup_iters:
+            return args.learning_rate * it / args.warmup_iters
+        # 2) if it > lr_decay_iters, return min learning rate
+        if it > args.lr_decay_iters:
+            return args.min_lr
+        # 3) in between, use cosine decay down to min learning rate
+        decay_ratio = (it - args.warmup_iters) / (args.lr_decay_iters - args.warmup_iters)
+        assert 0 <= decay_ratio <= 1
+        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
+        return args.min_lr + coeff * (args.learning_rate - args.min_lr)
 
     # setup model and optimizer
+    raw_model = model
     model, optimizer = fabric.setup(model, optimizer)
 
     # print(model)
-
     if args.compile:
+        print("compiling the model... (takes a ~minute)")
         model = torch.compile(model)
+        print("compiled the model.")
 
-    if fabric.world_size > 1:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(
-            train_dataset, shuffle=True, drop_last=False)
-        val_sampler = torch.utils.data.distributed.DistributedSampler(
-            val_dataset, shuffle=True, drop_last=False)
+    # wandb logging
+    if args.wandb_log and fabric.global_rank == 0:
+        import wandb
+        wandb.init(project=args.wandb_project, name=args.wandb_run_name, config=args)
 
-        # data loader
-        train_loader = torch.utils.data.DataLoader(
-            train_dataset, batch_size=args.batch_size, shuffle=False,
-            num_workers=args.workers, pin_memory=True, sampler=train_sampler,
-            prefetch_factor=5)
-        val_loader = torch.utils.data.DataLoader(
-            val_dataset, batch_size=args.batch_size, shuffle=False,
-            num_workers=args.workers, pin_memory=True, sampler=val_sampler,
-            prefetch_factor=5)
-    else:
-        train_loader = torch.utils.data.DataLoader(
-            train_dataset, batch_size=args.batch_size, shuffle=True,
-            num_workers=args.workers, pin_memory=True,
-            prefetch_factor=5)
-        val_loader = torch.utils.data.DataLoader(
-            val_dataset, batch_size=args.batch_size, shuffle=True,
-            num_workers=args.workers, pin_memory=True,
-            prefetch_factor=5)
 
-    # evaluate only
-    if args.evaluate:
-        # evaluate
-        validate(val_loader, model, criterion, fabric, args)
-        exit(0)
+    # train
+    model.train()
 
-    # fabric data loader
-    train_loader, val_loader = fabric.setup_dataloaders(train_loader, val_loader)
+    start_time = time.time()
+    iter_num = 0
+    running_mfu = -0.001
+    optimizer.zero_grad()
+    while True:
 
-    for epoch in range(args.start_epoch, args.epochs):
+        iter_num += 1
+        # Accumulate gradient N batches at a time
+        is_accumulating = iter_num % args.gradient_accumulation_steps != 0
 
-        batch_time = AverageMeter('Time', ':4.2f')
-        data_time = AverageMeter('Data', ':4.2f')
-        losses = AverageMeter('Loss', ':.2e')
-        top1 = AverageMeter('Acc@1', ':5.2f')
-        top5 = AverageMeter('Acc@5', ':5.2f')
-        progress = ProgressMeter(
-            len(train_loader),
-            [batch_time, data_time, losses, top1, top5],
-            prefix="[R:{}] [E:{}]".format(fabric.global_rank, epoch))
+        # determine and set the learning rate for this iteration
+        lr = get_lr(iter_num)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
 
-        # train
-        model.train()
-
-        end = time.time()
-        for i, (images, target) in enumerate(train_loader):
-            data_time.update(time.time() - end)
+        with fabric.no_backward_sync(model, enabled=is_accumulating):
+            X, Y = get_batch('train') # fetch the very first batch
 
             # move data to the same device as model
-            images = images.to(fabric.device, non_blocking=True)
-            target = target.to(fabric.device, non_blocking=True)
+            X = X.to(fabric.device, non_blocking=True)
+            Y = Y.to(fabric.device, non_blocking=True)
 
-            learning_rate = f"LR {','.join(['%.2e' % e for e in scheduler.get_last_lr()])}"
-
-            optimizer.zero_grad()
-            output = model(images)
             with fabric.autocast():
-                loss = criterion(output, target)
-                # measure accuracy and record loss
-                acc1, acc5 = accuracy(output, target, topk=(1, 5))
-                losses.update(loss.item(), images.size(0))
-                top1.update(acc1[0], images.size(0))
-                top5.update(acc5[0], images.size(0))
+                logits, loss = model(X, Y)
+                # loss = loss / args.gradient_accumulation_steps
                 fabric.backward(loss)
-                optimizer.step()
 
-            scheduler.step()
+        if not is_accumulating:
+            # Step the optimizer after accumulation phase is over
+            optimizer.step()
+            optimizer.zero_grad()
 
             # measure elapsed time
-            batch_time.update(time.time() - end)
-            end = time.time()
+            end_time = time.time()
+            dt = end_time - start_time
+            start_time = end_time
 
             # display
-            if (i+1) % args.print_freq == 0:
-                progress.display(i + 1, optional=learning_rate)
+            if fabric.global_rank == 0 and (iter_num) % (args.log_interval * args.gradient_accumulation_steps) == 0:
+                # get loss as float. note: this is a CPU-GPU sync point
+                # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
+                lossf = loss.item() # * args.gradient_accumulation_steps
+                mfu = raw_model.estimate_mfu(args.batch_size * args.gradient_accumulation_steps, dt)
+                running_mfu = mfu if running_mfu < 0.0 else 0.9*running_mfu + 0.1*mfu
+                print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
 
-        # display last batch
-        progress.display(iters_per_epoch, optional=learning_rate)
+        if iter_num % (args.eval_interval * args.gradient_accumulation_steps) == 0 and fabric.global_rank == 0:
+            losses = estimate_loss()
+            print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+            if args.wandb_log and fabric.global_rank == 0:
+                wandb.log({
+                    "iter": iter_num,
+                    "train/loss": losses['train'],
+                    "val/loss": losses['val'],
+                    "lr": lr,
+                    "mfu": running_mfu*100, # convert to percentage
+                })
 
-        # evaluate
-        validate(val_loader, model, criterion, fabric, args)
-
-
-def validate(val_loader, model, criterion, fabric, args):
-
-    def run_validate(loader, base_progress=0):
-        with torch.no_grad():
-            end = time.time()
-            for i, (images, target) in enumerate(loader):
-                i = base_progress + i
-                # move data to the same device as model
-                images = images.to(fabric.device, non_blocking=True)
-                target = target.to(fabric.device, non_blocking=True)
-
-                # compute output
-                output = model(images)
-                loss = criterion(output, target)
-
-                # measure accuracy and record loss
-                acc1, acc5 = accuracy(output, target, topk=(1, 5))
-                losses.update(loss.item(), images.size(0))
-                top1.update(acc1[0], images.size(0))
-                top5.update(acc5[0], images.size(0))
-
-                # measure elapsed time
-                batch_time.update(time.time() - end)
-                end = time.time()
-
-                if (i+1) % math.floor(args.print_freq / 2) == 0:
-                    progress.display(i + 1)
-
-    batch_time = AverageMeter('Time', ':6.3f', Summary.NONE)
-    losses = AverageMeter('Loss', ':.4e', Summary.NONE)
-    top1 = AverageMeter('Acc@1', ':6.2f', Summary.AVERAGE)
-    top5 = AverageMeter('Acc@5', ':6.2f', Summary.AVERAGE)
-    progress = ProgressMeter(
-        len(val_loader),
-        [batch_time, losses, top1, top5],
-        prefix='Test: ')
-
-    # switch to evaluate mode
-    model.eval()
-
-    run_validate(val_loader)
-    top1.all_reduce()
-    top5.all_reduce()
-
-    # if len(val_loader.sampler) * args.world_size < len(val_loader.dataset):
-    #     aux_val_dataset = Subset(val_loader.dataset,
-    #                              range(len(val_loader.sampler) * args.world_size, len(val_loader.dataset)))
-    #     aux_val_loader = torch.utils.data.DataLoader(
-    #         aux_val_dataset, batch_size=args.batch_size, shuffle=False,
-    #         num_workers=args.workers, pin_memory=True)
-    #     run_validate(aux_val_loader, len(val_loader))
-
-    progress.display_summary()
-
-    return top1.avg
-
-
-def save_checkpoint(state, is_best, filename='checkpoint.pth'):
-    torch.save(state, filename)
-    if is_best:
-        shutil.copyfile(filename, f'{filename}.best')
-
-
-class Summary(Enum):
-    NONE = 0
-    AVERAGE = 1
-    SUM = 2
-    COUNT = 3
-
-
-class AverageMeter(object):
-    """Computes and stores the average and current value"""
-
-    def __init__(self, name, fmt=':f', summary_type=Summary.AVERAGE):
-        self.name = name
-        self.fmt = fmt
-        self.summary_type = summary_type
-        self.reset()
-
-    def reset(self):
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
-        self.count = 0
-
-    def update(self, val, n=1):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = self.sum / self.count
-
-    def all_reduce(self):
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        elif torch.backends.mps.is_available():
-            device = torch.device("mps")
-        else:
-            device = torch.device("cpu")
-        total = torch.tensor([self.sum, self.count],
-                             dtype=torch.float32, device=device)
-        dist.all_reduce(total, dist.ReduceOp.SUM, async_op=False)
-        self.sum, self.count = total.tolist()
-        self.avg = self.sum / self.count
-
-    def __str__(self):
-        fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
-        return fmtstr.format(**self.__dict__)
-
-    def summary(self):
-        fmtstr = ''
-        if self.summary_type is Summary.NONE:
-            fmtstr = ''
-        elif self.summary_type is Summary.AVERAGE:
-            fmtstr = '{name} {avg:.3f}'
-        elif self.summary_type is Summary.SUM:
-            fmtstr = '{name} {sum:.3f}'
-        elif self.summary_type is Summary.COUNT:
-            fmtstr = '{name} {count:.3f}'
-        else:
-            raise ValueError('invalid summary type %r' % self.summary_type)
-
-        return fmtstr.format(**self.__dict__)
-
-
-class ProgressMeter(object):
-    def __init__(self, num_batches, meters, prefix=""):
-        self.batch_fmtstr = self._get_batch_fmtstr(num_batches)
-        self.meters = meters
-        self.prefix = prefix
-
-    def display(self, batch, optional=None):
-        entries = [self.prefix + self.batch_fmtstr.format(batch)]
-        entries += [str(meter) for meter in self.meters]
-        if optional is not None:
-            entries.insert(3, optional)
-        print('  '.join(entries))
-
-    def display_summary(self):
-        entries = [" *"]
-        entries += [meter.summary() for meter in self.meters]
-        print(' '.join(entries))
-
-    def _get_batch_fmtstr(self, num_batches):
-        num_digits = len(str(num_batches // 1))
-        fmt = '{:' + str(num_digits) + 'd}'
-        return '[' + fmt + '/' + fmt.format(num_batches) + ']'
-
-
-def accuracy(output, target, topk=(1,)):
-    """Computes the accuracy over the k top predictions for the specified values of k"""
-    with torch.no_grad():
-        maxk = max(topk)
-        batch_size = target.size(0)
-
-        _, pred = output.topk(maxk, 1, True, True)
-        pred = pred.t()
-        correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-        res = []
-        for k in topk:
-            correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
-            res.append(correct_k.mul_(100.0 / batch_size))
-        return res
+        # termination conditions
+        if iter_num > args.max_iters:
+            break
 
 
 if __name__ == '__main__':

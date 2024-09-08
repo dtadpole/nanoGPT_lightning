@@ -1,5 +1,6 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
+wandb/
 *.py[cod]
 *$py.class
 
@@ -81,6 +82,7 @@ target/
 # IPython
 profile_default/
 ipython_config.py
+*.bin
 
 # pyenv
 #   For a library or package, you might want to ignore these files since the code is
