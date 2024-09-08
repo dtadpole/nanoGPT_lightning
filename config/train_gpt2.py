@@ -19,7 +19,7 @@ args.max_iters = 600000
 args.lr_decay_iters = 600000
 
 # eval stuff
-args.eval_interval = 200
+args.eval_interval = 100
 args.eval_iters = 400
 args.log_interval = 10
 
