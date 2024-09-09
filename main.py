@@ -55,6 +55,8 @@ parser.add_argument('--beta2', default=0.95, type=float, metavar='B2',
 parser.add_argument('--wd', '--weight-decay', default=0.1, type=float,
                     metavar='W', help='weight decay (default: 0.1)',
                     dest='weight_decay')
+parser.add_argument('--clip-gradients', default=1.0, type=float,
+                    metavar='CLIP_GRADIENTS', help='clip gradients')
 parser.add_argument('--gradient-accumulation-steps', default=40, type=int,
                     metavar='GRADIENT_ACCUMULATION_STEPS', help='gradient accumulation steps')
 # iterations
@@ -212,11 +214,11 @@ def main():
 
     # train
     model.train()
+    optimizer.zero_grad()
 
     start_time = time.time()
     iter_num = 0
     running_mfu = -0.001
-    optimizer.zero_grad()
     while True:
 
         iter_num += 1
@@ -235,12 +237,17 @@ def main():
             X = X.to(fabric.device, non_blocking=True)
             Y = Y.to(fabric.device, non_blocking=True)
 
-            with fabric.autocast():
-                logits, loss = model(X, Y)
-                # loss = loss / args.gradient_accumulation_steps
-                fabric.backward(loss)
+            # with fabric.autocast():
+            logits, loss = model(X, Y)
+
+            # loss = loss / args.gradient_accumulation_steps
+            fabric.backward(loss)
 
         if not is_accumulating:
+            # clip gradients
+            if args.clip_gradients:
+                fabric.clip_gradients(model, optimizer, clip_val=args.clip_gradients)
+
             # Step the optimizer after accumulation phase is over
             optimizer.step()
             optimizer.zero_grad()
