@@ -235,11 +235,11 @@ def main():
                 with fabric.autocast():
                     logits, loss = model(X, Y)
 
-                    # immediately async prefetch next batch while model is doing the forward pass on the GPU
-                    X, Y = get_batch(fabric, 'train')
+                # immediately async prefetch next batch while model is doing the forward pass on the GPU
+                X, Y = get_batch(fabric, 'train')
 
-                    # loss = loss / gradient_accumulation_steps
-                    fabric.backward(loss / gradient_accumulation_steps)
+                # loss = loss / gradient_accumulation_steps
+                fabric.backward(loss / gradient_accumulation_steps)
 
         # clip gradients
         if args.clip_gradients:
