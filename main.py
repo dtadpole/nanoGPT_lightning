@@ -60,8 +60,8 @@ parser.add_argument('--clip-gradients', default=1.0, type=float,
 parser.add_argument('--gradient-accumulation-steps', default=40, type=int,
                     metavar='GRADIENT_ACCUMULATION_STEPS', help='gradient accumulation steps')
 # iterations
-parser.add_argument('--warmup-iters', default=20000, type=int,
-                    help='warmup epoch (default: 20000)')
+parser.add_argument('--warmup-iters', default=2000, type=int,
+                    help='warmup epoch (default: 2000)')
 parser.add_argument('--lr-decay-iters', default=600000, type=int,
                     metavar='LR_DECAY_ITERS', help='learning rate decay iterations')
 parser.add_argument('--max-iters', default=600000, type=int,
@@ -226,9 +226,10 @@ def main():
     running_mfu = -0.001
     while True:
 
+        iter_num += 1
+
         for micro_step in range(gradient_accumulation_steps):
 
-            iter_num += 1
             # Accumulate gradient N batches at a time
             is_accumulating = micro_step != gradient_accumulation_steps - 1
 
@@ -262,7 +263,7 @@ def main():
         start_time = end_time
 
         # display
-        if fabric.global_rank == 0 and (iter_num) % (args.log_interval * gradient_accumulation_steps) == 0:
+        if fabric.global_rank == 0 and (iter_num) % (args.log_interval) == 0:
             # get loss as float. note: this is a CPU-GPU sync point
             # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
             lossf = loss.item() # * args.gradient_accumulation_steps
@@ -270,7 +271,7 @@ def main():
             running_mfu = mfu if running_mfu < 0.0 else 0.9*running_mfu + 0.1*mfu
             print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
 
-        if iter_num % (args.eval_interval * gradient_accumulation_steps) == 0 and fabric.global_rank == 0:
+        if iter_num % (args.eval_interval) == 0 and fabric.global_rank == 0:
             losses = estimate_loss(fabric)
             print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
             if args.wandb_log and fabric.global_rank == 0:
