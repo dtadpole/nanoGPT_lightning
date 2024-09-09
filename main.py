@@ -171,13 +171,13 @@ def main():
 
     # helps estimate an arbitrarily accurate loss over either split using many batches
     @torch.no_grad()
-    def estimate_loss():
+    def estimate_loss(fabric):
         out = {}
         model.eval()
         for split in ['train', 'val']:
             losses = torch.zeros(args.eval_iters)
             for k in range(args.eval_iters):
-                X, Y = get_batch(split)
+                X, Y = get_batch(fabric, split)
                 _, loss = model(X, Y)
                 losses[k] = loss.item()
             out[split] = losses.mean()
@@ -218,6 +218,7 @@ def main():
     model.train()
     optimizer.zero_grad()
     gradient_accumulation_steps = args.gradient_accumulation_steps
+    X, Y = get_batch(fabric, 'train') # fetch the very first batch
 
     start_time = time.time()
     iter_num = 0
@@ -231,13 +232,14 @@ def main():
             is_accumulating = micro_step != gradient_accumulation_steps - 1
 
             with fabric.no_backward_sync(model, enabled=is_accumulating):
-                X, Y = get_batch(fabric, 'train') # fetch the very first batch
+                with fabric.autocast():
+                    logits, loss = model(X, Y)
 
-                # with fabric.autocast():
-                logits, loss = model(X, Y)
+                    # immediately async prefetch next batch while model is doing the forward pass on the GPU
+                    X, Y = get_batch(fabric, 'train')
 
-                # loss = loss / gradient_accumulation_steps
-                fabric.backward(loss / gradient_accumulation_steps)
+                    # loss = loss / gradient_accumulation_steps
+                    fabric.backward(loss / gradient_accumulation_steps)
 
         # clip gradients
         if args.clip_gradients:
@@ -267,7 +269,7 @@ def main():
             print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
 
         if iter_num % (args.eval_interval * gradient_accumulation_steps) == 0 and fabric.global_rank == 0:
-            losses = estimate_loss()
+            losses = estimate_loss(fabric)
             print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
             if args.wandb_log and fabric.global_rank == 0:
                 wandb.log({
