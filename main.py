@@ -217,7 +217,7 @@ def main():
     # train
     model.train()
     optimizer.zero_grad()
-    assert gradient_accumulation_steps % fabric.world_size == 0
+    assert args.gradient_accumulation_steps % fabric.world_size == 0
     gradient_accumulation_steps = args.gradient_accumulation_steps // fabric.world_size
     X, Y = get_batch(fabric, 'train') # fetch the very first batch
 
