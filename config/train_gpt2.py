@@ -9,7 +9,7 @@ args.wandb_project = 'gpt2'
 args.wandb_run_name='gpt2-124M'
 
 # these make the total batch size be ~0.5M
-# 16 batch size * 1024 block size * 5 gradaccum * 2 GPUs = 163,840 [491,520]
+# 10 batch size * 1024 block size * 32 gradaccum = 163,840 [327,680]
 args.batch_size = 10
 args.block_size = 1024
 args.gradient_accumulation_steps = 32
