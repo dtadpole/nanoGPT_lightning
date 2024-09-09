@@ -160,11 +160,13 @@ def main():
     # this came from 8,013,769 documents in total.
     train_data = np.memmap(os.path.join(args.data, 'train.bin'), dtype=np.uint16, mode='r')
     val_data = np.memmap(os.path.join(args.data, 'val.bin'), dtype=np.uint16, mode='r')
-    def get_batch(split):
+    def get_batch(fabric, split):
         data = train_data if split == 'train' else val_data
         ix = torch.randint(len(data) - args.block_size, (args.batch_size,))
         x = torch.stack([torch.from_numpy((data[i:i+args.block_size]).astype(np.int64)) for i in ix])
         y = torch.stack([torch.from_numpy((data[i+1:i+1+args.block_size]).astype(np.int64)) for i in ix])
+        # move data to the same device as model
+        x, y = x.pin_memory().to(fabric.device, non_blocking=True), y.pin_memory().to(fabric.device, non_blocking=True)
         return x, y
 
     # helps estimate an arbitrarily accurate loss over either split using many batches
@@ -215,58 +217,56 @@ def main():
     # train
     model.train()
     optimizer.zero_grad()
+    gradient_accumulation_steps = args.gradient_accumulation_steps
 
     start_time = time.time()
     iter_num = 0
     running_mfu = -0.001
     while True:
 
-        iter_num += 1
-        # Accumulate gradient N batches at a time
-        is_accumulating = iter_num % args.gradient_accumulation_steps != 0
+        for micro_step in range(gradient_accumulation_steps):
+
+            iter_num += 1
+            # Accumulate gradient N batches at a time
+            is_accumulating = micro_step != gradient_accumulation_steps - 1
+
+            with fabric.no_backward_sync(model, enabled=is_accumulating):
+                X, Y = get_batch(fabric, 'train') # fetch the very first batch
+
+                # with fabric.autocast():
+                logits, loss = model(X, Y)
+
+                # loss = loss / gradient_accumulation_steps
+                fabric.backward(loss / gradient_accumulation_steps)
+
+        # clip gradients
+        if args.clip_gradients:
+            fabric.clip_gradients(model, optimizer, clip_val=args.clip_gradients)
 
         # determine and set the learning rate for this iteration
         lr = get_lr(iter_num)
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
-        with fabric.no_backward_sync(model, enabled=is_accumulating):
-            X, Y = get_batch('train') # fetch the very first batch
+        # Step the optimizer after accumulation phase is over
+        optimizer.step()
+        optimizer.zero_grad()
 
-            # move data to the same device as model
-            X = X.to(fabric.device, non_blocking=True)
-            Y = Y.to(fabric.device, non_blocking=True)
+        # measure elapsed time
+        end_time = time.time()
+        dt = end_time - start_time
+        start_time = end_time
 
-            # with fabric.autocast():
-            logits, loss = model(X, Y)
+        # display
+        if fabric.global_rank == 0 and (iter_num) % (args.log_interval * gradient_accumulation_steps) == 0:
+            # get loss as float. note: this is a CPU-GPU sync point
+            # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
+            lossf = loss.item() # * args.gradient_accumulation_steps
+            mfu = raw_model.estimate_mfu(args.batch_size * gradient_accumulation_steps, dt)
+            running_mfu = mfu if running_mfu < 0.0 else 0.9*running_mfu + 0.1*mfu
+            print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
 
-            # loss = loss / args.gradient_accumulation_steps
-            fabric.backward(loss)
-
-        if not is_accumulating:
-            # clip gradients
-            if args.clip_gradients:
-                fabric.clip_gradients(model, optimizer, clip_val=args.clip_gradients)
-
-            # Step the optimizer after accumulation phase is over
-            optimizer.step()
-            optimizer.zero_grad()
-
-            # measure elapsed time
-            end_time = time.time()
-            dt = end_time - start_time
-            start_time = end_time
-
-            # display
-            if fabric.global_rank == 0 and (iter_num) % (args.log_interval * args.gradient_accumulation_steps) == 0:
-                # get loss as float. note: this is a CPU-GPU sync point
-                # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
-                lossf = loss.item() # * args.gradient_accumulation_steps
-                mfu = raw_model.estimate_mfu(args.batch_size * args.gradient_accumulation_steps, dt)
-                running_mfu = mfu if running_mfu < 0.0 else 0.9*running_mfu + 0.1*mfu
-                print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
-
-        if iter_num % (args.eval_interval * args.gradient_accumulation_steps) == 0 and fabric.global_rank == 0:
+        if iter_num % (args.eval_interval * gradient_accumulation_steps) == 0 and fabric.global_rank == 0:
             losses = estimate_loss()
             print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
             if args.wandb_log and fabric.global_rank == 0:
