@@ -217,7 +217,8 @@ def main():
     # train
     model.train()
     optimizer.zero_grad()
-    gradient_accumulation_steps = args.gradient_accumulation_steps
+    assert gradient_accumulation_steps % fabric.world_size == 0
+    gradient_accumulation_steps = args.gradient_accumulation_steps // fabric.world_size
     X, Y = get_batch(fabric, 'train') # fetch the very first batch
 
     start_time = time.time()
@@ -240,6 +241,7 @@ def main():
 
                 # loss = loss / gradient_accumulation_steps
                 fabric.backward(loss / gradient_accumulation_steps)
+                # fabric.backward(loss)
 
         # clip gradients
         if args.clip_gradients:
