@@ -28,9 +28,12 @@ from torch.utils.data import Subset
 import lightning as L
 from lightning.fabric.accelerators import find_usable_cuda_devices
 from gpt2 import GPT2, GPTConfig
+from transformers import MambaConfig, Mamba, MambaModel, MambaForCausalLM
 
 # parser
 parser = argparse.ArgumentParser(description='PyTorch GPT2 Training')
+parser.add_argument('-a', '--arch', default='gpt2', type=str, metavar='ARCH',
+                    help='model architecture (default: gpt2)')
 parser.add_argument('-d', '--data', metavar='DIR', nargs='?', default='./data/openwebtext/',
                     help='path to dataset (default: ./data/openwebtext/)')
 parser.add_argument('--config-file', default='./config/train_gpt2.py', type=str, metavar='PATH',
@@ -143,7 +146,25 @@ def main():
     best_val_loss = 1e9
 
     # model
-    model = GPT2(GPTConfig())
+    if args.arch == 'gpt2':
+        config = GPTConfig()
+        model = GPT2(config)
+    elif args.arch == 'mamba':
+        config = MambaConfig(
+            d_model=768,
+            n_layer=12, # 24,
+            # vocab_size=50304, # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
+            vocab_size=50277,
+            ssm_cfg={},
+            rms_norm=True,
+            residual_in_fp32=True,
+            fused_add_norm=True,
+            pad_vocab_size_multiple=64
+            # pad_vocab_size_multiple=8
+        )
+        model = MambaModel(config)
+    else:
+        raise ValueError(f"Invalid architecture: {args.arch}")
     model = model.cuda()
 
     # optimizer
@@ -211,7 +232,7 @@ def main():
     # wandb logging
     if args.wandb_log and fabric.global_rank == 0:
         import wandb
-        wandb.init(project=args.wandb_project, name=args.wandb_run_name, config=args)
+        wandb.init(project=args.wandb_project, name=args.wandb_run_name, config={**vars(args), **config.__dict__})
 
 
     # train
@@ -235,7 +256,14 @@ def main():
 
             with fabric.no_backward_sync(model, enabled=is_accumulating):
                 with fabric.autocast():
-                    logits, loss = model(X, Y)
+                    if args.arch == 'gpt2':
+                        logits, loss = model(X, Y)
+                    elif args.arch == 'mamba':
+                        outputs = model(input_ids=X, labels=Y)
+                        loss = outputs.loss
+                        logits = outputs.logits
+                        # logits = model(X)
+                        # loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=-1)
 
                 # immediately async prefetch next batch while model is doing the forward pass on the GPU
                 X, Y = get_batch(fabric, 'train')

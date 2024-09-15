@@ -71,9 +71,9 @@ class MLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        self.c_fc    = nn.Linear(config.n_embd, config.n_expand * config.n_embd , bias=config.bias)
         self.gelu    = nn.GELU()
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.c_proj  = nn.Linear(config.n_expand * config.n_embd, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
@@ -87,25 +87,55 @@ class ShuffleMLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
+        assert config.n_embd % config.n_group == 0
         self.n_group = config.n_group
-        self.c_conv1 = nn.Conv1d(config.n_embd, config.n_embd*4, kernel_size=config.n_group, padding=config.n_group-1, groups=config.n_group, bias=config.bias)
+        self.c_fc    = nn.Linear(config.n_embd // self.n_group, config.n_expand * config.n_embd // self.n_group, bias=config.bias)
         self.gelu    = nn.GELU()
-        self.c_conv2 = nn.Conv1d(config.n_embd*4, config.n_embd, kernel_size=config.n_group, padding=config.n_group-1, groups=config.n_group, bias=config.bias)
+        self.c_proj  = nn.Linear(config.n_expand * config.n_embd // self.n_group, config.n_embd // self.n_group, bias=config.bias)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x):
+        B, L, D = x.shape                                   # (B, L, D)
+        assert D % self.n_group == 0
+        x = x.view(B, L, self.n_group, D//self.n_group)     # (B, L, G, D/G)
+        x = self.c_fc(x)                                    # (B, L, G, D*E/G)
+        x = self.gelu(x)
+        x = self.channel_shuffle(x)                         # (B, L, G, D*E/G)
+        x = self.c_proj(x)                                  # (B, L, G, D/G)
+        x = x.view(B, L, D)                                 # (B, L, D)
+        x = self.dropout(x)
+        return x
+
+    def channel_shuffle(self, x):
+        B, L, G, C = x.shape                                # C == D*E/G
+        x = x.permute(0, 1, 3, 2).contiguous()
+        x = x.view(B, L, G, C)
+        return x
+
+
+class ConvMLP(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.n_group = config.n_group
+        self.c_conv1 = nn.Conv1d(config.n_embd, config.n_embd*config.n_expand, kernel_size=config.n_kernel, padding=config.n_kernel-1, groups=config.n_group, bias=config.bias)
+        self.gelu    = nn.GELU()
+        self.c_conv2 = nn.Conv1d(config.n_embd*config.n_expand, config.n_embd, kernel_size=config.n_kernel, padding=config.n_kernel-1, groups=config.n_group, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
         B, L, D = x.shape                       # (B, L, D)
         x = x.permute(0, 2, 1).contiguous()     # (B, D, L)
-        x = self.c_conv1(x)[..., :L]            # (B, D*4, L)
+        x = self.c_conv1(x)[..., :L]            # (B, D*E, L)
         x = self.gelu(x)
-        x = self.channel_shuffle(x)             # (B, D*4, L)
+        x = self.channel_shuffle(x)             # (B, D*E, L)
         x = self.c_conv2(x)[..., :L]            # (B, D, L)
         x = x.permute(0, 2, 1).contiguous()     # (B, L, D)
         x = self.dropout(x)
         return x
 
     def channel_shuffle(self, x):
-        B, C, L = x.shape                       # C == D*4
+        B, C, L = x.shape                       # C == D*E
         assert C % self.n_group == 0
         group_channels = C // self.n_group
         
@@ -123,7 +153,9 @@ class Block(nn.Module):
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
-        if config.shuffle_mlp:
+        if config.conv_mlp:
+            self.mlp = ConvMLP(config)
+        elif config.shuffle_mlp:
             self.mlp = ShuffleMLP(config)
         else:
             self.mlp = MLP(config)
@@ -140,9 +172,12 @@ class GPTConfig:
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
+    n_expand: int = 8
     n_group: int = 4
+    n_kernel: int = 1
     dropout: float = 0.1
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    conv_mlp = False
     shuffle_mlp = True
 
 class GPT2(nn.Module):
