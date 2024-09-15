@@ -28,7 +28,8 @@ from torch.utils.data import Subset
 import lightning as L
 from lightning.fabric.accelerators import find_usable_cuda_devices
 from gpt2 import GPT2, GPTConfig
-from transformers import MambaConfig, Mamba, MambaModel, MambaForCausalLM
+from transformers import MambaConfig, MambaModel, MambaForCausalLM
+from mamba_ssm import Mamba
 
 # parser
 parser = argparse.ArgumentParser(description='PyTorch GPT2 Training')

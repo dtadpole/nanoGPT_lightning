@@ -12,7 +12,7 @@ args.wandb_run_name='gpt2-124M'
 # 10 batch size * 1024 block size * 32 gradaccum = 163,840 [327,680]
 args.batch_size = 8
 args.block_size = 1024
-args.gradient_accumulation_steps = 40 # 32
+args.gradient_accumulation_steps = 42 # 32
 
 # this makes total number of tokens be 300B
 args.max_iters = 600000 // 4
