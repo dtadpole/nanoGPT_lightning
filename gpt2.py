@@ -138,7 +138,7 @@ class ConvMLP(nn.Module):
         B, C, L = x.shape                       # C == D*E
         assert C % self.n_group == 0
         group_channels = C // self.n_group
-        
+
         x = x.reshape(B, group_channels, self.n_group, L)
         x = x.permute(0, 2, 1, 3).contiguous()
         x = x.reshape(B, C, L)

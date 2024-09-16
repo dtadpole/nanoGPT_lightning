@@ -28,7 +28,8 @@ from torch.utils.data import Subset
 import lightning as L
 from lightning.fabric.accelerators import find_usable_cuda_devices
 from gpt2 import GPT2, GPTConfig
-from transformers import MambaConfig, Mamba, MambaModel, MambaForCausalLM
+from mamba import MyMamba, MyMambaConfig
+# from transformers import MambaConfig, Mamba, MambaModel, MambaForCausalLM
 
 # parser
 parser = argparse.ArgumentParser(description='PyTorch GPT2 Training')
@@ -150,19 +151,8 @@ def main():
         config = GPTConfig()
         model = GPT2(config)
     elif args.arch == 'mamba':
-        config = MambaConfig(
-            d_model=768,
-            n_layer=12, # 24,
-            # vocab_size=50304, # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
-            vocab_size=50277,
-            ssm_cfg={},
-            rms_norm=True,
-            residual_in_fp32=True,
-            fused_add_norm=True,
-            pad_vocab_size_multiple=64
-            # pad_vocab_size_multiple=8
-        )
-        model = MambaModel(config)
+        config = MyMambaConfig()
+        model = MyMamba(config)
     else:
         raise ValueError(f"Invalid architecture: {args.arch}")
     model = model.cuda()
@@ -259,9 +249,10 @@ def main():
                     if args.arch == 'gpt2':
                         logits, loss = model(X, Y)
                     elif args.arch == 'mamba':
-                        outputs = model(input_ids=X, labels=Y)
-                        loss = outputs.loss
-                        logits = outputs.logits
+                        logits, loss = model(X, Y)
+                        # outputs = model(input_ids=X, labels=Y)
+                        # loss = outputs.loss
+                        # logits = outputs.logits
                         # logits = model(X)
                         # loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=-1)
 
