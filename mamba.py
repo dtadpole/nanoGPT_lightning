@@ -37,21 +37,22 @@ class MLP(nn.Module):
         x = self.dropout(x)
         return x
 
-
-
 class MyBlock(nn.Module):
 
     def __init__(self, config):
         super().__init__()
+        self.config = config
         self.ln1 = LayerNorm(config.d_model, bias=config.bias)
         self.mamba = Mamba(d_model=config.d_model, d_state=config.d_state, d_conv=config.d_conv,
                   expand=config.n_expand, conv_bias=config.conv_bias, bias=config.bias)
-        self.ln2 = LayerNorm(config.d_model, bias=config.bias)
-        self.mlp = MLP(config)
+        if config.enable_mlp:
+            self.ln2 = LayerNorm(config.d_model, bias=config.bias)
+            self.mlp = MLP(config)
 
     def forward(self, x):
         x = x + self.mamba(self.ln1(x))
-        x = x + self.mlp(self.ln2(x))
+        if self.config.enable_mlp:
+            x = x + self.mlp(self.ln2(x))
         return x
 
 
