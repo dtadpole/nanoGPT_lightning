@@ -9,7 +9,7 @@ from gpt2 import LayerNorm, MLP
 class MyMambaConfig:
     block_size: int = 1024
     vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
-    n_layer: int = 12
+    n_layer: int = 6
     d_model: int = 768
     d_ffn: int = 768 * 4
     d_state: int = 128

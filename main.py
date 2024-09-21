@@ -222,7 +222,11 @@ def main():
     # wandb logging
     if args.wandb_log and fabric.global_rank == 0:
         import wandb
-        wandb.init(project=args.wandb_project, name=args.wandb_run_name, config={**vars(args), **config.__dict__})
+        merged_args = {**vars(args), **config.__dict__}
+        model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+        params = sum([np.prod(p.size()) for p in model_parameters])
+        args.wandb_run_name = f"{merged_args.arch}-{merged_args.n_layer}-{params/1e6:.1f}M"
+        wandb.init(project=args.wandb_project, name=args.wandb_run_name, config=merged_args)
 
 
     # train
