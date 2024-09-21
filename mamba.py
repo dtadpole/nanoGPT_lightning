@@ -1,7 +1,7 @@
 import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass
-from mamba_ssm import Mamba
+from mamba_ssm import Mamba, Mamba2
 from mamba_ssm.ops.triton.layer_norm import RMSNorm, layer_norm_fn
 from gpt2 import LayerNorm, MLP
 
@@ -12,13 +12,14 @@ class MyMambaConfig:
     n_layer: int = 6
     d_model: int = 768
     d_ffn: int = 768 * 4
-    d_state: int = 16
+    d_state: int = 256
     d_conv: int = 4
     n_expand: int = 2
     dropout: float = 0.1
     conv_bias: bool = False
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     enable_mlp: bool = True
+    use_mamba2: bool = True
 
 
 class MLP(nn.Module):
@@ -43,7 +44,11 @@ class MyBlock(nn.Module):
         super().__init__()
         self.config = config
         self.ln1 = LayerNorm(config.d_model, bias=config.bias)
-        self.mamba = Mamba(d_model=config.d_model, d_state=config.d_state, d_conv=config.d_conv,
+        if config.use_mamba2:
+            self.mamba = Mamba2(d_model=config.d_model, d_state=config.d_state, d_conv=config.d_conv,
+                  expand=config.n_expand, conv_bias=config.conv_bias, bias=config.bias)
+        else:
+            self.mamba = Mamba(d_model=config.d_model, d_state=config.d_state, d_conv=config.d_conv,
                   expand=config.n_expand, conv_bias=config.conv_bias, bias=config.bias)
         if config.enable_mlp:
             self.ln2 = LayerNorm(config.d_model, bias=config.bias)
