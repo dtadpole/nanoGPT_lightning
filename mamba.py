@@ -12,7 +12,7 @@ class MyMambaConfig:
     n_layer: int = 6
     d_model: int = 768
     d_ffn: int = 768 * 4
-    d_state: int = 256
+    d_state: int = 128
     d_conv: int = 4
     n_expand: int = 2
     dropout: float = 0.1
