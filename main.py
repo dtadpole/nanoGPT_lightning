@@ -224,8 +224,8 @@ def main():
         import wandb
         merged_args = {**vars(args), **config.__dict__}
         model_parameters = filter(lambda p: p.requires_grad, model.parameters())
-        params = sum([np.prod(p.size()) for p in model_parameters])
-        args.wandb_run_name = f"{merged_args.arch}-{merged_args.n_layer}-{params/1e6:.1f}M"
+        param_count = sum([np.prod(p.size()) for p in model_parameters])
+        args.wandb_run_name = f"{merged_args["arch"]}-{merged_args["n_layer"]}-{param_count/1e6:.1f}M"
         wandb.init(project=args.wandb_project, name=args.wandb_run_name, config=merged_args)
 
 
