@@ -64,16 +64,14 @@ class MoE(nn.Module):
         nn.init.kaiming_uniform_(self.w2, a=math.sqrt(5))
 
     def forward(self, x):
-        choice = torch.einsum('bsd,ed->bse', x, self.choice) # (batch_size, n_seq_len, n_experts)
-        choice = F.softmax(choice, dim=-1)
+        choice = F.softmax(torch.einsum('bsd,ed->bse', x, self.choice), dim=-1) # (batch_size, n_seq_len, n_experts)
         k = self.config.block_size * self.config.n_expert_capacity // self.config.n_experts # 1024 * 2 // 8 = 256
         G, I = torch.topk(torch.transpose(choice, -1, -2), k) # (batch_size, n_experts, k)
-        P = F.one_hot(I, num_classes=self.config.block_size) # (batch_size, n_experts, k, n_seq_len)
-        P = P.to(x.dtype)
+        P = F.one_hot(I, num_classes=self.config.block_size).to(x.dtype) # (batch_size, n_experts, k, n_seq_len)
         x_in = torch.einsum('beks,bsd->bekd', P, x) # (batch_size, n_experts, k, d_model)
         x_mlp = torch.einsum('beki,eoi->beko', self.silu(torch.einsum('beki,eoi->beko', x_in, self.w1)), self.w2) # (batch_size, n_experts, k, d_model)
         x_e = torch.einsum('beks,bekd->besd', P, x_mlp) # (batch_size, n_experts, k, d_model)
-        x_out = torch.einsum('beks,bek,besd->bsd', P, G, x_e)
+        x_out = torch.einsum('beks,bek,besd->bsd', P, G, x_e) # (batch_size, n_experts, k, d_model)
         x_out = self.dropout(x_out)
         return x_out
 
