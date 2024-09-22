@@ -1,3 +1,5 @@
+import math
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass
@@ -15,11 +17,14 @@ class MyMambaConfig:
     d_state: int = 128
     d_conv: int = 4
     n_expand: int = 2
+    n_experts: int = 8
+    n_expert_capacity: int = 2
     dropout: float = 0.1
     conv_bias: bool = False
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    enable_mlp: bool = True
     use_mamba2: bool = True
+    enable_mlp: bool = True
+    use_moe: bool = True
 
 
 class MLP(nn.Module):
@@ -38,6 +43,42 @@ class MLP(nn.Module):
         x = self.dropout(x)
         return x
 
+
+class MoE(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.choice = nn.Parameter(torch.empty(config.n_experts, config.d_model))
+        self.w1 = nn.Parameter(torch.empty(config.n_experts, config.d_ffn, config.d_model))
+        self.w2 = nn.Parameter(torch.empty(config.n_experts, config.d_model, config.d_ffn))
+        self.silu = nn.SiLU()
+        self.dropout = nn.Dropout(config.dropout)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        # Setting a=sqrt(5) in kaiming_uniform is the same as initializing with
+        # uniform(-1/sqrt(in_features), 1/sqrt(in_features)). For details, see
+        # https://github.com/pytorch/pytorch/issues/57109
+        nn.init.kaiming_uniform_(self.choice, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.w1, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.w2, a=math.sqrt(5))
+
+    def forward(self, x):
+        choice = x @ torch.transpose(self.choice, -1, -2) # (batch_size, n_seq_len, n_experts)
+        choice = F.softmax(choice, dim=-1)
+        k = self.config.block_size * self.config.n_expert_capacity // self.config.n_experts # 1024 * 2 // 8 = 256
+        G, I = torch.topk(torch.transpose(choice, -1, -2), k) # (batch_size, n_experts, k)
+        P = F.one_hot(I, num_classes=self.config.block_size) # (batch_size, n_experts, k, n_seq_len)
+        P = P.to(x.dtype)
+        x_in = torch.einsum('beks,bsd->bekd', P, x) # (batch_size, n_experts, k, d_model)
+        x_in_mlp = self.silu(x_in @ torch.transpose(self.w1, -1, -2)) @ torch.transpose(self.w2, -1, -2) # (batch_size, n_experts, k, d_model)
+        x_e = torch.einsum('beks,bekd->besd', P, x_in_mlp) # (batch_size, n_experts, k, d_model)
+        x_out = torch.einsum('beks,bek,besd->bsd', P, G, x_e)
+        x_out = self.dropout(x_out)
+        return x_out
+
+
 class MyBlock(nn.Module):
 
     def __init__(self, config):
@@ -52,12 +93,15 @@ class MyBlock(nn.Module):
                   expand=config.n_expand, conv_bias=config.conv_bias, bias=config.bias)
         if config.enable_mlp:
             self.ln2 = LayerNorm(config.d_model, bias=config.bias)
-            self.mlp = MLP(config)
-
+            if config.use_moe:
+                self.mlp_or_moe = MoE(config)
+            else:
+                self.mlp_or_moe = MLP(config)
+            
     def forward(self, x):
         x = x + self.mamba(self.ln1(x))
         if self.config.enable_mlp:
-            x = x + self.mlp(self.ln2(x))
+            x = x + self.mlp_or_moe(self.ln2(x))
         return x
 
 

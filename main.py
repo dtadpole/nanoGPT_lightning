@@ -85,6 +85,8 @@ parser.add_argument('-g', '--gpu', default=None, type=str,
                     metavar='GPU', help='gpu (default None)')
 
 
+wandb_inited = False
+
 # -----------------------------------------------------------------------------
 args = parser.parse_args()
 if args.config_file:
@@ -219,16 +221,6 @@ def main():
         model = torch.compile(model)
         print("compiled the model.")
 
-    # wandb logging
-    if args.wandb_log and fabric.global_rank == 0:
-        import wandb
-        merged_args = {**vars(args), **config.__dict__}
-        model_parameters = filter(lambda p: p.requires_grad, model.parameters())
-        param_count = sum([np.prod(p.size()) for p in model_parameters])
-        args.wandb_run_name = f'{merged_args["arch"]}-{merged_args["n_layer"]}L-{param_count/1e6:.1f}M'
-        wandb.init(project=args.wandb_project, name=args.wandb_run_name, config=merged_args)
-
-
     # train
     model.train()
     optimizer.zero_grad()
@@ -298,6 +290,16 @@ def main():
             losses = estimate_loss(fabric)
             print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
             if args.wandb_log and fabric.global_rank == 0:
+                # wandb init
+                if (not wandb_inited) and args.wandb_log and fabric.global_rank == 0:
+                    import wandb
+                    merged_args = {**vars(args), **config.__dict__}
+                    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+                    param_count = sum([np.prod(p.size()) for p in model_parameters])
+                    args.wandb_run_name = f'{merged_args["arch"]}-{merged_args["n_layer"]}L-{param_count/1e6:.1f}M'
+                    wandb.init(project=args.wandb_project, name=args.wandb_run_name, config=merged_args)
+                    wandb_inited = True
+                # wandb log
                 wandb.log({
                     "iter": iter_num,
                     "train/loss": losses['train'],
