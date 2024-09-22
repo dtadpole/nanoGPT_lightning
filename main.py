@@ -232,11 +232,11 @@ def main():
     start_time = time.time()
     iter_num = 0
     running_mfu = -0.001
+    acc_loss = []
     while True:
 
         iter_num += 1
 
-        acc_loss = []
         for micro_step in range(gradient_accumulation_steps):
 
             # Accumulate gradient N batches at a time
@@ -286,6 +286,7 @@ def main():
             # get loss as float. note: this is a CPU-GPU sync point
             # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
             lossf = numpy.mean(acc_loss) # * args.gradient_accumulation_steps
+            acc_loss = [] # reset acc_loss
             mfu = raw_model.estimate_mfu(args.batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu < 0.0 else 0.9*running_mfu + 0.1*mfu
             print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
