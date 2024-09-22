@@ -5,6 +5,7 @@ import inspect
 import shutil
 import time
 import math
+import numpy
 import warnings
 from enum import Enum
 import numpy as np
@@ -85,7 +86,6 @@ parser.add_argument('-g', '--gpu', default=None, type=str,
                     metavar='GPU', help='gpu (default None)')
 
 
-wandb_inited = False
 
 # -----------------------------------------------------------------------------
 args = parser.parse_args()
@@ -128,6 +128,7 @@ def configure_optimizers(model, weight_decay, learning_rate, betas):
 
 def main():
     global best_acc1
+    wandb_inited = False
 
     strategy = "auto"
 
@@ -235,6 +236,7 @@ def main():
 
         iter_num += 1
 
+        acc_loss = []
         for micro_step in range(gradient_accumulation_steps):
 
             # Accumulate gradient N batches at a time
@@ -251,6 +253,8 @@ def main():
                         # logits = outputs.logits
                         # logits = model(X)
                         # loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=-1)
+
+                acc_loss.append(loss.item())
 
                 # immediately async prefetch next batch while model is doing the forward pass on the GPU
                 X, Y = get_batch(fabric, 'train')
@@ -281,7 +285,7 @@ def main():
         if fabric.global_rank == 0 and (iter_num) % (args.log_interval) == 0:
             # get loss as float. note: this is a CPU-GPU sync point
             # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
-            lossf = loss.item() # * args.gradient_accumulation_steps
+            lossf = numpy.mean(acc_loss) # * args.gradient_accumulation_steps
             mfu = raw_model.estimate_mfu(args.batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu < 0.0 else 0.9*running_mfu + 0.1*mfu
             print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
