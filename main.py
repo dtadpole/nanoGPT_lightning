@@ -200,13 +200,26 @@ def main():
         return out
 
     def estimate_flops(fabric, model):
+        print("Warming up...")
+        # warmup
+        X, Y = get_batch(fabric, 'train')
+        for _ in range(25):
+            _, prof_loss = model(X, Y)
+            X, Y = get_batch(fabric, 'train')
+            fabric.backward(prof_loss)
+        # profile
+        print("Profiling...")
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                    with_flops=True, record_shapes=True,
-                    execution_trace_observer=ExecutionTraceObserver().register_callback("./execution_trace.json")) as prof:
-            for _ in range(10):
+                    on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
+                    # execution_trace_observer=ExecutionTraceObserver().register_callback("./execution_trace.json"),
+                    with_flops=True, record_shapes=True, profile_memory=True, with_stack=True) as prof:
+            for _ in range(5):
                 prof.step() # Need to call this at each step to notify profiler of steps' boundary.
+                _, prof_loss = model(X, Y)
                 X, Y = get_batch(fabric, 'train')
-                model(X, Y)
+                fabric.backward(prof_loss)
+            print("Profile end.")
+        print("Profile done.")
 
     def get_lr(it):
         # 1) linear warmup for warmup_iters steps
@@ -232,6 +245,7 @@ def main():
         print("compiled the model.")
 
     # profile the model
+    # if fabric.global_rank == 0:
     estimate_flops(fabric, model)
 
     # train
