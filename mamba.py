@@ -71,7 +71,7 @@ class MoE(nn.Module):
         x_in = torch.einsum('beks,bsd->bekd', P, x) # (batch_size, n_experts, k, d_model)
         x_mlp = torch.einsum('beki,eoi->beko', self.silu(torch.einsum('beki,eoi->beko', x_in, self.w1)), self.w2) # (batch_size, n_experts, k, d_model)
         x_e = torch.einsum('beks,bekd->besd', P, x_mlp) # (batch_size, n_experts, k, d_model)
-        x_out = torch.einsum('beks,bek,besd->bsd', P, G, x_e) # (batch_size, n_experts, k, d_model)
+        x_out = torch.einsum('beks,bek,besd->bsd', P, G, x_e) # (batch_size, n_seq_len, d_model)
         x_out = self.dropout(x_out)
         return x_out
 

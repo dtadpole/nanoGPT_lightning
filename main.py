@@ -30,6 +30,7 @@ import lightning as L
 from lightning.fabric.accelerators import find_usable_cuda_devices
 from gpt2 import GPT2, GPTConfig
 from mamba import MyMamba, MyMambaConfig
+from torch.profiler import profile, record_function, ProfilerActivity, ExecutionTraceObserver
 # from transformers import MambaConfig, Mamba, MambaModel, MambaForCausalLM
 
 # parser
@@ -198,7 +199,15 @@ def main():
         model.train()
         return out
 
-    # learning rate decay scheduler (cosine with warmup)
+    def estimate_flops(fabric, model):
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                    with_flops=True, record_shapes=True,
+                    execution_trace_observer=ExecutionTraceObserver().register_callback("./execution_trace.json")) as prof:
+            for _ in range(10):
+                prof.step() # Need to call this at each step to notify profiler of steps' boundary.
+                X, Y = get_batch(fabric, 'train')
+                model(X, Y)
+
     def get_lr(it):
         # 1) linear warmup for warmup_iters steps
         if it < args.warmup_iters:
@@ -222,12 +231,16 @@ def main():
         model = torch.compile(model)
         print("compiled the model.")
 
+    # profile the model
+    estimate_flops(fabric, model)
+
     # train
     model.train()
     optimizer.zero_grad()
     assert args.gradient_accumulation_steps % fabric.world_size == 0
     gradient_accumulation_steps = args.gradient_accumulation_steps // fabric.world_size
     X, Y = get_batch(fabric, 'train') # fetch the very first batch
+
 
     start_time = time.time()
     iter_num = 0
