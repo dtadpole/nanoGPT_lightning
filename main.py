@@ -218,8 +218,8 @@ def main():
                 _, prof_loss = model(X, Y)
                 X, Y = get_batch(fabric, 'train')
                 fabric.backward(prof_loss)
-            print("Profile end.")
-        print("Profile done.")
+            print("Profile done.")
+        print("Profile ended.")
 
     def get_lr(it):
         # 1) linear warmup for warmup_iters steps
