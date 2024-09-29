@@ -12,7 +12,7 @@ class MyMambaConfig:
     vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     n_layer: int = 12
     d_model: int = 768
-    d_ffn: int = 768 * 4
+    d_ffn: int = 768 * 2
     d_state: int = 128
     d_conv: int = 4
     n_expand: int = 2
@@ -23,7 +23,7 @@ class MyMambaConfig:
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     use_mamba2: bool = True
     enable_mlp: bool = True
-    use_moe: bool = False
+    use_moe: bool = True
 
 
 class MLP(nn.Module):
@@ -68,10 +68,12 @@ class MoE(nn.Module):
         k = self.config.block_size * self.config.n_expert_capacity // self.config.n_experts # 1024 * 2 // 8 = 256
         G, I = torch.topk(torch.transpose(choice, -1, -2), k) # (batch_size, n_experts, k)
         P = F.one_hot(I, num_classes=self.config.block_size).to(x.dtype) # (batch_size, n_experts, k, n_seq_len)
-        x_in = torch.einsum('beks,bsd->bekd', P, x) # (batch_size, n_experts, k, d_model)
-        x_mlp = torch.einsum('beki,eoi->beko', self.silu(torch.einsum('beki,eoi->beko', x_in, self.w1)), self.w2) # (batch_size, n_experts, k, d_model)
-        x_e = torch.einsum('beks,bekd->besd', P, x_mlp) # (batch_size, n_experts, k, d_model)
-        x_out = torch.einsum('beks,bek,besd->bsd', P, G, x_e) # (batch_size, n_seq_len, d_model)
+        x_in  = torch.einsum('beks,bsd->bekd', P, x) # (batch_size, n_experts, k, d_model)
+        x_mlp = torch.einsum('beki,edi->bekd', self.silu(torch.einsum('bekd,eod->beko', x_in, self.w1)), self.w2) # (batch_size, n_experts, k, d_model)
+        # x_mlp = torch.einsum('beki,edi->bekd', self.silu(torch.einsum('beks,bsd,eod->beko', P, x, self.w1)), self.w2) # (batch_size, n_experts, k, d_model)
+        # x_e   = torch.einsum('beks,bekd->besd', P, x_mlp) # (batch_size, n_experts, n_seq_len, d_model)
+        # x_out = torch.einsum('beks,bek,besd->bsd', P, G, x_e) # (batch_size, n_seq_len, d_model)
+        x_out = torch.einsum('beks,bek,bekd->bsd', P, G, x_mlp) # (batch_size, n_seq_len, d_model)
         x_out = self.dropout(x_out)
         return x_out
 
