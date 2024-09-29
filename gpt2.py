@@ -172,13 +172,13 @@ class GPTConfig:
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
-    n_expand: int = 8
-    n_group: int = 4
+    n_expand: int = 4
+    n_group: int = 2
     n_kernel: int = 1
     dropout: float = 0.1
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     conv_mlp = False
-    shuffle_mlp = True
+    shuffle_mlp = False
 
 class GPT2(nn.Module):
 
@@ -367,6 +367,14 @@ class GPT2(nn.Module):
         flops_promised = 82.5e12 # 4070 Ti Super GPU bfloat16 peak flops is 312 TFLOPS
         mfu = flops_achieved / flops_promised
         return mfu
+
+    def model_flops_per_fwdbwd(self):
+        N = self.get_num_params()
+        cfg = self.config
+        L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.block_size
+        flops_per_token = 6*N + 12*L*H*Q*T
+        flops_per_fwdbwd = flops_per_token * T
+        return flops_per_fwdbwd
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):

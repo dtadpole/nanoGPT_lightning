@@ -31,6 +31,8 @@ from lightning.fabric.accelerators import find_usable_cuda_devices
 from gpt2 import GPT2, GPTConfig
 from mamba import MyMamba, MyMambaConfig
 from torch.profiler import profile, record_function, ProfilerActivity, ExecutionTraceObserver
+from deepspeed.profiling.flops_profiler.profiler import FlopsProfiler
+from fvcore.nn import FlopCountAnalysis
 # from transformers import MambaConfig, Mamba, MambaModel, MambaForCausalLM
 
 # parser
@@ -199,7 +201,7 @@ def main():
         model.train()
         return out
 
-    def estimate_flops(fabric, model):
+    def profile_model(fabric, model):
         print("Warming up...")
         # warmup
         X, Y = get_batch(fabric, 'train')
@@ -208,18 +210,46 @@ def main():
             X, Y = get_batch(fabric, 'train')
             fabric.backward(prof_loss)
         # profile
-        print("Profiling...")
+        print("DeepSpeed Profiling...")
+        prof = FlopsProfiler(model)
+        prof.start_profile()
+        _, prof_loss = model(X, Y)
+        X, Y = get_batch(fabric, 'train')
+        fabric.backward(prof_loss)
+        model_flops = prof.get_total_flops() / args.batch_size
+        model_params = prof.get_total_params()
+        print(f'Model flops: {model_flops/1e9:.1f}G')
+        print(f'Model params: {model_params/1e6:.1f}M')
+        # prof.print_model_profile(profile_step=5)
+        prof.end_profile()
+        print("DeepSpeed Profile ended.")
+
+        # flops = FlopCountAnalysis(model, input)
+        # model_flops_2 = flops.total()
+        # print(f'Model flops: {model_flops_2/1e9:.1f}G')
+
+        print("PyTorch Profiling...")
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                    on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
-                    # execution_trace_observer=ExecutionTraceObserver().register_callback("./execution_trace.json"),
-                    with_flops=True, record_shapes=True, profile_memory=True, with_stack=True) as prof:
-            for _ in range(5):
+                    # on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
+                    # record_shapes=True, profile_memory=True, with_stack=True,
+                    with_flops=True) as prof:
+            for _ in range(2):
                 prof.step() # Need to call this at each step to notify profiler of steps' boundary.
                 _, prof_loss = model(X, Y)
                 X, Y = get_batch(fabric, 'train')
                 fabric.backward(prof_loss)
-            print("Profile done.")
-        print("Profile ended.")
+            print("PyTorch Profile done.")
+        # print(prof.key_averages().table(sort_by="flops", row_limit=5))
+        print("PyTorch Profile ended.")
+        return model_flops, model_params
+
+    def estimate_mfu(fwd_flops, fwdbwd_per_iter, dt):
+        flops_per_fwdbwd = fwd_flops # * 3
+        flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
+        flops_achieved = flops_per_iter * (1.0/dt) # per second
+        flops_promised = 82.5e12 # 4070 Ti Super GPU bfloat16 peak flops is 312 TFLOPS
+        mfu = flops_achieved / flops_promised
+        return mfu
 
     def get_lr(it):
         # 1) linear warmup for warmup_iters steps
@@ -246,7 +276,7 @@ def main():
 
     # profile the model
     # if fabric.global_rank == 0:
-    estimate_flops(fabric, model)
+    model_flops, model_params = profile_model(fabric, model)
 
     # train
     model.train()
@@ -258,7 +288,8 @@ def main():
 
     start_time = time.time()
     iter_num = 0
-    running_mfu = -0.001
+    running_mfu_1 = -0.001
+    running_mfu_2 = -0.001
     acc_loss = []
     while True:
 
@@ -314,9 +345,11 @@ def main():
             # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
             lossf = numpy.mean(acc_loss) # * args.gradient_accumulation_steps
             acc_loss = [] # reset acc_loss
-            mfu = raw_model.estimate_mfu(args.batch_size * gradient_accumulation_steps, dt)
-            running_mfu = mfu if running_mfu < 0.0 else 0.9*running_mfu + 0.1*mfu
-            print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+            mfu_1 = estimate_mfu(model_flops, args.batch_size * gradient_accumulation_steps, dt)
+            mfu_2 = model.estimate_mfu(args.batch_size * gradient_accumulation_steps, dt)
+            running_mfu_1 = mfu_1 if running_mfu_1 < 0.0 else 0.9*running_mfu_1 + 0.1*mfu_1
+            running_mfu_2 = mfu_2 if running_mfu_2 < 0.0 else 0.9*running_mfu_2 + 0.1*mfu_2
+            print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu_1 {running_mfu_1*100:.2f}%, mfu_2 {running_mfu_2*100:.2f}%")
 
         if iter_num % (args.eval_interval) == 0 and fabric.global_rank == 0:
             losses = estimate_loss(fabric)
@@ -326,9 +359,9 @@ def main():
                 if (not wandb_inited):
                     import wandb
                     merged_args = {**vars(args), **config.__dict__}
-                    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
-                    param_count = sum([np.prod(p.size()) for p in model_parameters])
-                    args.wandb_run_name = f'{merged_args["arch"]}-{merged_args["n_layer"]}L-{param_count/1e6:.1f}M'
+                    # model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+                    # param_count = sum([np.prod(p.size()) for p in model_parameters])
+                    args.wandb_run_name = f'{merged_args["arch"]}-{merged_args["n_layer"]}L-{model_params/1e6:.1f}M'
                     wandb.init(project=args.wandb_project, name=args.wandb_run_name, config=merged_args)
                     wandb_inited = True
                 # wandb log
@@ -337,7 +370,7 @@ def main():
                     "train/loss": losses['train'],
                     "val/loss": losses['val'],
                     "lr": lr,
-                    "mfu": running_mfu*100, # convert to percentage
+                    "mfu": running_mfu_1*100, # convert to percentage
                 })
 
         # termination conditions

@@ -10,7 +10,7 @@ from gpt2 import LayerNorm, MLP
 class MyMambaConfig:
     block_size: int = 1024
     vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
-    n_layer: int = 6
+    n_layer: int = 12
     d_model: int = 768
     d_ffn: int = 768 * 4
     d_state: int = 128
@@ -23,7 +23,7 @@ class MyMambaConfig:
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     use_mamba2: bool = True
     enable_mlp: bool = True
-    use_moe: bool = True
+    use_moe: bool = False
 
 
 class MLP(nn.Module):
@@ -94,7 +94,7 @@ class MyBlock(nn.Module):
                 self.mlp_or_moe = MoE(config)
             else:
                 self.mlp_or_moe = MLP(config)
-            
+
     def forward(self, x):
         x = x + self.mamba(self.ln1(x))
         if self.config.enable_mlp:
@@ -127,3 +127,11 @@ class MyMamba(nn.Module):
 
     def estimate_mfu(self, fwdbwd_per_iter, dt):
         return 0.0
+
+    def model_flops_per_fwdbwd(self):
+        N = self.get_num_params()
+        cfg = self.config
+        L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.block_size
+        flops_per_token = 6*N + 12*L*H*Q*T
+        flops_per_fwdbwd = flops_per_token * T
+        return flops_per_fwdbwd
