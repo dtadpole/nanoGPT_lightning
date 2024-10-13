@@ -203,6 +203,8 @@ def main():
         return out
 
     def profile_model(fabric, model):
+        if not args.profile:
+            return 0, 0
         print("Warming up...")
         # print(f"Fabric strategy: {fabric.strategy}")
         # warmup
@@ -230,20 +232,19 @@ def main():
         # model_flops_2 = flops.total()
         # print(f'Model flops: {model_flops_2/1e9:.1f}G')
 
-        if args.profile:
-            print("PyTorch Profiling...")
-            with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                        # on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
-                        # record_shapes=True, profile_memory=True, with_stack=True,
-                        with_flops=True) as prof:
-                for _ in range(2):
-                    prof.step() # Need to call this at each step to notify profiler of steps' boundary.
-                    _, prof_loss = model(X, Y)
-                    X, Y = get_batch(fabric, 'train')
-                    fabric.backward(prof_loss)
-                print("PyTorch Profile done.")
-            # print(prof.key_averages().table(sort_by="flops", row_limit=5))
-            print("PyTorch Profile ended.")
+        print("PyTorch Profiling...")
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                    # on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
+                    # record_shapes=True, profile_memory=True, with_stack=True,
+                    with_flops=True) as prof:
+            for _ in range(2):
+                prof.step() # Need to call this at each step to notify profiler of steps' boundary.
+                _, prof_loss = model(X, Y)
+                X, Y = get_batch(fabric, 'train')
+                fabric.backward(prof_loss)
+            print("PyTorch Profile done.")
+        # print(prof.key_averages().table(sort_by="flops", row_limit=5))
+        print("PyTorch Profile ended.")
         return model_flops, model_params
 
     def estimate_mfu(fwd_flops, fwdbwd_per_iter, dt):
