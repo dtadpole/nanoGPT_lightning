@@ -53,6 +53,7 @@ parser.add_argument('--block-size', default=1024, type=int,
                     help='block size (default: 1024)')
 parser.add_argument('--strategy', default='auto', type=str,
                     help='strategy (default: auto)')
+parser.add_argument('--profile', action='store_true', help='profile')
 # learning rate
 parser.add_argument('--lr', '--learning-rate', default=6e-4, type=float,
                     metavar='LR', help='initial learning rate', dest='learning_rate')
@@ -229,19 +230,20 @@ def main():
         # model_flops_2 = flops.total()
         # print(f'Model flops: {model_flops_2/1e9:.1f}G')
 
-        print("PyTorch Profiling...")
-        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                    # on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
-                    # record_shapes=True, profile_memory=True, with_stack=True,
-                    with_flops=True) as prof:
-            for _ in range(2):
-                prof.step() # Need to call this at each step to notify profiler of steps' boundary.
-                _, prof_loss = model(X, Y)
-                X, Y = get_batch(fabric, 'train')
-                fabric.backward(prof_loss)
-            print("PyTorch Profile done.")
-        # print(prof.key_averages().table(sort_by="flops", row_limit=5))
-        print("PyTorch Profile ended.")
+        if args.profile:
+            print("PyTorch Profiling...")
+            with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                        # on_trace_ready=torch.profiler.tensorboard_trace_handler('./log'),
+                        # record_shapes=True, profile_memory=True, with_stack=True,
+                        with_flops=True) as prof:
+                for _ in range(2):
+                    prof.step() # Need to call this at each step to notify profiler of steps' boundary.
+                    _, prof_loss = model(X, Y)
+                    X, Y = get_batch(fabric, 'train')
+                    fabric.backward(prof_loss)
+                print("PyTorch Profile done.")
+            # print(prof.key_averages().table(sort_by="flops", row_limit=5))
+            print("PyTorch Profile ended.")
         return model_flops, model_params
 
     def estimate_mfu(fwd_flops, fwdbwd_per_iter, dt):
