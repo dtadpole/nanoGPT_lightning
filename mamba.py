@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from dataclasses import dataclass
 from mamba_ssm import Mamba, Mamba2
 from gpt2 import LayerNorm, MLP
+from lightning.fabric.strategies import FSDPStrategy
 
 @dataclass
 class MyMambaConfig:
@@ -23,7 +24,7 @@ class MyMambaConfig:
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     use_mamba2: bool = True
     enable_mlp: bool = True
-    use_moe: bool = True
+    use_moe: bool = False
 
 
 class MLP(nn.Module):
@@ -127,11 +128,13 @@ class MyMamba(nn.Module):
 
         return logits, loss
 
-    def estimate_mfu(self, fwdbwd_per_iter, dt):
+    def estimate_mfu(self, fabric, fwdbwd_per_iter, dt):
         return 0.0
 
-    def model_flops_per_fwdbwd(self):
+    def model_flops_per_fwdbwd(self, fabric):
         N = self.get_num_params()
+        if isinstance(fabric.strategy, FSDPStrategy):
+            N = N * fabric.world_size
         cfg = self.config
         L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.block_size
         flops_per_token = 6*N + 12*L*H*Q*T
