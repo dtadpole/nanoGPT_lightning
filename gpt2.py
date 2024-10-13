@@ -1,4 +1,3 @@
-
 import math
 import inspect
 from dataclasses import dataclass
@@ -6,6 +5,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from lightning.fabric.strategies.fsdp import FSDPStrategy
 
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
@@ -351,11 +351,13 @@ class GPT2(nn.Module):
 
         return optimizer
 
-    def estimate_mfu(self, fwdbwd_per_iter, dt):
+    def estimate_mfu(self, fabric, fwdbwd_per_iter, dt):
         """ estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS """
         # first estimate the number of flops we do per iteration.
         # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
         N = self.get_num_params()
+        if isinstance(fabric.strategy, FSDPStrategy):
+            N = N * fabric.world_size
         cfg = self.config
         L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.block_size
         flops_per_token = 6*N + 12*L*H*Q*T
@@ -368,8 +370,10 @@ class GPT2(nn.Module):
         mfu = flops_achieved / flops_promised
         return mfu
 
-    def model_flops_per_fwdbwd(self):
+    def model_flops_per_fwdbwd(self, fabric):
         N = self.get_num_params()
+        if isinstance(fabric.strategy, FSDPStrategy):
+            N = N * fabric.world_size
         cfg = self.config
         L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.block_size
         flops_per_token = 6*N + 12*L*H*Q*T

@@ -32,7 +32,7 @@ from gpt2 import GPT2, GPTConfig
 from mamba import MyMamba, MyMambaConfig
 from torch.profiler import profile, record_function, ProfilerActivity, ExecutionTraceObserver
 from deepspeed.profiling.flops_profiler.profiler import FlopsProfiler
-from fvcore.nn import FlopCountAnalysis
+# from fvcore.nn import FlopCountAnalysis
 # from transformers import MambaConfig, Mamba, MambaModel, MambaForCausalLM
 
 # parser
@@ -51,6 +51,8 @@ parser.add_argument('-b', '--batch-size', default=12, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument('--block-size', default=1024, type=int,
                     help='block size (default: 1024)')
+parser.add_argument('--strategy', default='auto', type=str,
+                    help='strategy (default: auto)')
 # learning rate
 parser.add_argument('--lr', '--learning-rate', default=6e-4, type=float,
                     metavar='LR', help='initial learning rate', dest='learning_rate')
@@ -133,8 +135,6 @@ def main():
     global best_acc1
     wandb_inited = False
 
-    strategy = "auto"
-
     if args.gpu:
         accelerator = "cuda"
         devices = args.gpu
@@ -144,7 +144,7 @@ def main():
 
     precision = args.amp
 
-    fabric = L.Fabric(precision=precision, strategy=strategy,
+    fabric = L.Fabric(precision=precision, strategy=args.strategy,
                       accelerator=accelerator, devices=devices)
     fabric.launch()
 
@@ -203,6 +203,7 @@ def main():
 
     def profile_model(fabric, model):
         print("Warming up...")
+        # print(f"Fabric strategy: {fabric.strategy}")
         # warmup
         X, Y = get_batch(fabric, 'train')
         for _ in range(25):
@@ -346,7 +347,7 @@ def main():
             lossf = numpy.mean(acc_loss) # * args.gradient_accumulation_steps
             acc_loss = [] # reset acc_loss
             mfu_1 = estimate_mfu(model_flops, args.batch_size * gradient_accumulation_steps, dt)
-            mfu_2 = model.estimate_mfu(args.batch_size * gradient_accumulation_steps, dt)
+            mfu_2 = model.estimate_mfu(fabric, args.batch_size * gradient_accumulation_steps, dt)
             running_mfu_1 = mfu_1 if running_mfu_1 < 0.0 else 0.9*running_mfu_1 + 0.1*mfu_1
             running_mfu_2 = mfu_2 if running_mfu_2 < 0.0 else 0.9*running_mfu_2 + 0.1*mfu_2
             print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu_1 {running_mfu_1*100:.2f}%, mfu_2 {running_mfu_2*100:.2f}%")
