@@ -327,7 +327,8 @@ def main():
                 X, Y = get_batch(fabric, 'train')
 
                 # loss = loss / gradient_accumulation_steps
-                fabric.backward((loss + loss2) / gradient_accumulation_steps)
+                # fabric.backward((loss + loss2) / gradient_accumulation_steps)
+                fabric.backward(loss / gradient_accumulation_steps)
                 # fabric.backward(loss)
 
         # clip gradients
