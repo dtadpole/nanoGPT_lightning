@@ -101,7 +101,7 @@ class MyBlock(nn.Module):
                     expert_size=config.d_ffn//config.n_experts,
                     k=config.n_expert_capacity,
                     dropout=config.dropout,
-                    selection_mode="sigmoid")
+                    selection_mode="silu")
             elif config.use_moe:
                 self.mlp_or_moe = MoE(config)
             else:
