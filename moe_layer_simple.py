@@ -184,7 +184,10 @@ if __name__ == "__main__":
     dmodel = 768
     moe = MoE(dmodel=dmodel, n_experts=8, expert_size=768//8*4, k=2, dropout=0.1, selection_mode="sigmoid").cuda()
     # calculate parameters
-    print(sum(p.numel() for p in moe.parameters()))
-    input = torch.randn(32, dmodel).cuda()
-    output, reg_loss = moe(input)
-    print(output.shape, reg_loss)
+    print('parameters:', sum(p.numel() for p in moe.parameters()))
+    for _ in range(20):
+        input = torch.randn(32, dmodel).cuda()
+        moe.eval()
+        output, reg_loss = moe(input)
+        print(output.shape, reg_loss)
+        moe.train()
