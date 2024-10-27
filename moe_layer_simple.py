@@ -190,7 +190,7 @@ if __name__ == "__main__":
     print('parameters:', sum(p.numel() for p in moe.parameters()))
     for _ in range(20):
         input = torch.randn(32, dmodel).cuda()
-        moe.eval()
+        # moe.eval()
         output, reg_loss = moe(input)
         print(output.shape, reg_loss)
-        moe.train()
+        # moe.train()
