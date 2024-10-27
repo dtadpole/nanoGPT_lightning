@@ -281,6 +281,9 @@ def main():
     # profile the model
     # if fabric.global_rank == 0:
     model_flops, model_params = profile_model(fabric, model)
+    if model_params == 0:
+        model_params = sum(p.numel() for p in model.parameters())
+
 
     # train
     model.train()
