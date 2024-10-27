@@ -4,8 +4,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass
 from mamba_ssm import Mamba, Mamba2
-from gpt2 import LayerNorm, MLP
+from gpt2 import LayerNorm
 from lightning.fabric.strategies import FSDPStrategy
+from moe_layer_simple import MoE as Sigma_MoE
 
 @dataclass
 class MyMambaConfig:
@@ -13,7 +14,7 @@ class MyMambaConfig:
     vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     n_layer: int = 12
     d_model: int = 768
-    d_ffn: int = 768 * 2
+    d_ffn: int = 768 * 4
     d_state: int = 128
     d_conv: int = 4
     n_expand: int = 2
@@ -25,10 +26,10 @@ class MyMambaConfig:
     use_mamba2: bool = True
     enable_mlp: bool = True
     use_moe: bool = False
+    use_sigma_moe: bool = True
 
 
 class MLP(nn.Module):
-
     def __init__(self, config):
         super().__init__()
         self.c_fc    = nn.Linear(config.d_model, config.d_ffn, bias=config.bias)
@@ -93,16 +94,29 @@ class MyBlock(nn.Module):
                   expand=config.n_expand, conv_bias=config.conv_bias, bias=config.bias)
         if config.enable_mlp:
             self.ln2 = LayerNorm(config.d_model, bias=config.bias)
-            if config.use_moe:
+            if config.use_sigma_moe:
+                self.mlp_or_moe = Sigma_MoE(
+                    dmodel=config.d_model,
+                    n_experts=config.n_experts,
+                    expert_size=config.d_ffn//config.n_experts,
+                    k=config.n_expert_capacity,
+                    dropout=config.dropout,
+                    selection_mode="sigmoid")
+            elif config.use_moe:
                 self.mlp_or_moe = MoE(config)
             else:
                 self.mlp_or_moe = MLP(config)
 
     def forward(self, x):
+        loss = None
         x = x + self.mamba(self.ln1(x))
         if self.config.enable_mlp:
-            x = x + self.mlp_or_moe(self.ln2(x))
-        return x
+            if self.config.use_sigma_moe:
+                output, loss = self.mlp_or_moe(self.ln2(x))
+                x = x + output
+            else:
+                x = x + self.mlp_or_moe(self.ln2(x))
+        return x, loss
 
 
 class MyMamba(nn.Module):
@@ -119,14 +133,17 @@ class MyMamba(nn.Module):
     def forward(self, x, y):
         # apply embedding
         emb = self.emb(x)
+        loss2 = torch.tensor([0.0], dtype=emb.dtype).to(emb.device)
         # apply blocks
         for block in self.blocks:
-            emb = block(emb)
+            emb, _loss = block(emb)
+            if _loss is not None:
+                loss2 += _loss
 
         logits = self.head(emb)  # Changed from x to emb
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1), ignore_index=-1)
 
-        return logits, loss
+        return logits, loss, loss2
 
     def estimate_mfu(self, fabric, fwdbwd_per_iter, dt):
         return 0.0

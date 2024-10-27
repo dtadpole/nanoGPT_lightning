@@ -295,6 +295,7 @@ def main():
     running_mfu_1 = -0.001
     running_mfu_2 = -0.001
     acc_loss = []
+    acc_loss2 = []
     while True:
 
         iter_num += 1
@@ -309,7 +310,7 @@ def main():
                     if args.arch == 'gpt2':
                         logits, loss = model(X, Y)
                     elif args.arch == 'mamba':
-                        logits, loss = model(X, Y)
+                        logits, loss, loss2 = model(X, Y)
                         # outputs = model(input_ids=X, labels=Y)
                         # loss = outputs.loss
                         # logits = outputs.logits
@@ -317,12 +318,13 @@ def main():
                         # loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=-1)
 
                 acc_loss.append(loss.item())
+                acc_loss2.append(loss2.item())
 
                 # immediately async prefetch next batch while model is doing the forward pass on the GPU
                 X, Y = get_batch(fabric, 'train')
 
                 # loss = loss / gradient_accumulation_steps
-                fabric.backward(loss / gradient_accumulation_steps)
+                fabric.backward((loss + loss2) / gradient_accumulation_steps)
                 # fabric.backward(loss)
 
         # clip gradients
@@ -349,11 +351,13 @@ def main():
             # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
             lossf = numpy.mean(acc_loss) # * args.gradient_accumulation_steps
             acc_loss = [] # reset acc_loss
+            loss2f = numpy.mean(acc_loss2) # * args.gradient_accumulation_steps
+            acc_loss2 = [] # reset acc_loss2
             mfu_1 = estimate_mfu(model_flops, args.batch_size * gradient_accumulation_steps, dt)
             mfu_2 = model.estimate_mfu(fabric, args.batch_size * gradient_accumulation_steps, dt)
             running_mfu_1 = mfu_1 if running_mfu_1 < 0.0 else 0.9*running_mfu_1 + 0.1*mfu_1
             running_mfu_2 = mfu_2 if running_mfu_2 < 0.0 else 0.9*running_mfu_2 + 0.1*mfu_2
-            print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu_1 {running_mfu_1*100:.2f}%, mfu_2 {running_mfu_2*100:.2f}%")
+            print(f"iter {iter_num}: loss {lossf:.4f}, loss2 {loss2f:.4f}, time {dt*1000:.2f}ms, mfu_1 {running_mfu_1*100:.2f}%, mfu_2 {running_mfu_2*100:.2f}%")
 
         if iter_num % (args.eval_interval) == 0 and fabric.global_rank == 0:
             losses = estimate_loss(fabric)
