@@ -196,7 +196,7 @@ def main():
             losses = torch.zeros(args.eval_iters)
             for k in range(args.eval_iters):
                 X, Y = get_batch(fabric, split)
-                _, loss = model(X, Y)
+                _, loss, _ = model(X, Y)
                 losses[k] = loss.item()
             out[split] = losses.mean()
         model.train()
