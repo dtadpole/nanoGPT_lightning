@@ -143,7 +143,7 @@ class MyMamba(nn.Module):
         logits = self.head(emb)  # Changed from x to emb
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1), ignore_index=-1)
 
-        return logits, loss, loss2 / self.config.n_layer
+        return logits, loss, loss2 / self.config.n_layer / self.config.n_experts
 
     def estimate_mfu(self, fabric, fwdbwd_per_iter, dt):
         return 0.0
