@@ -21,7 +21,7 @@ args.warmup_iters = 2000
 
 # eval stuff
 args.eval_interval = 2000 // 5
-args.eval_iters = 400
+args.eval_iters = 200
 args.log_interval = 20
 
 # weight decay
