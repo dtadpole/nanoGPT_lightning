@@ -22,15 +22,15 @@ def dist_logsumexp(x: torch.Tensor, dim: int, keepdim: bool = False) -> torch.Te
 
 
 def log_mean(x: torch.Tensor, dim: int = 0):
-    # if torch.distributed.is_initialized():
-    #     xlse = dist_logsumexp(x, dim=dim)
-    #     # Normalize
-    #     n = torch.tensor(x.shape[dim]).to(x.device)
-    #     torch.distributed.all_reduce(n, op=torch.distributed.ReduceOp.SUM)
-    #     return xlse - n.log()
-    # else:
-    #     return x.logsumexp(dim) - math.log(x.shape[dim])
-    return x.logsumexp(dim) - math.log(x.shape[dim])
+    if torch.distributed.is_initialized():
+        xlse = dist_logsumexp(x, dim=dim)
+        # Normalize
+        n = torch.tensor(x.shape[dim]).to(x.device)
+        torch.distributed.all_reduce(n, op=torch.distributed.ReduceOp.SUM)
+        return xlse - n.log()
+    else:
+        return x.logsumexp(dim) - math.log(x.shape[dim])
+    # return x.logsumexp(dim) - math.log(x.shape[dim])
 
 
 def entropy_l(l: torch.Tensor) -> torch.Tensor:
@@ -88,10 +88,13 @@ class MoE(torch.nn.Module):
 
     def entropy_reg(self, sel: torch.Tensor) -> float:
         # Everything is done in log scale
-        sel = sel.flatten(0, -2)
-        sel = F.log_softmax(sel, dim=-1)
-        sel = log_mean(sel, -2)
-        return - entropy_l(sel).mean()
+        if self.training:
+            sel = sel.flatten(0, -2)
+            sel = F.log_softmax(sel, dim=-1)
+            sel = log_mean(sel, -2)
+            return - entropy_l(sel).mean()
+        else:
+            return 0.0
 
     def compute_scores(self, input: torch.Tensor, index: CVMMSel) -> torch.Tensor:
         scores = cvmm(input, index, self.keys)

@@ -18,8 +18,8 @@ class MyMambaConfig:
     d_state: int = 128
     d_conv: int = 4
     n_expand: int = 2
-    n_experts: int = 8
-    n_expert_capacity: int = 2
+    n_experts: int = 16
+    n_expert_capacity: int = 4
     dropout: float = 0.1
     conv_bias: bool = False
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
