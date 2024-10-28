@@ -7,6 +7,7 @@ from mamba_ssm import Mamba, Mamba2
 from gpt2 import LayerNorm
 from lightning.fabric.strategies import FSDPStrategy
 from moe_layer_simple import MoE as Sigma_MoE
+from scattermoe.mlp import MLP as Scatter_MLP
 
 @dataclass
 class MyMambaConfig:
@@ -14,19 +15,20 @@ class MyMambaConfig:
     vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     n_layer: int = 12
     d_model: int = 768
-    d_ffn: int = 768 * 4
+    d_ffn: int = 768 * 16
     d_state: int = 128
     d_conv: int = 4
     n_expand: int = 2
-    n_experts: int = 16
-    n_expert_capacity: int = 4
+    n_experts: int = 8
+    n_expert_capacity: int = 2
     dropout: float = 0.1
     conv_bias: bool = False
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     use_mamba2: bool = True
     enable_mlp: bool = True
-    use_moe: bool = False
+    use_moe: bool = True
     use_sigma_moe: bool = True
+    use_scatter_moe: bool = False
 
 
 class MLP(nn.Module):
@@ -77,6 +79,43 @@ class MoE(nn.Module):
         # x_out = torch.einsum('beks,bek,besd->bsd', P, G, x_e) # (batch_size, n_seq_len, d_model)
         x_out = torch.einsum('beks,bek,bekd->bsd', P, G, x_mlp) # (batch_size, n_seq_len, d_model)
         x_out = self.dropout(x_out)
+        # print('MOE', x.dtype, x_in.dtype, x_out.dtype, x_mlp.dtype, G.dtype, I.dtype, P.dtype)
+        return x_out
+
+class Scatter_MoE(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.mlp = Scatter_MLP(
+            input_size=config.d_model,
+            hidden_size=config.d_ffn,
+            activation=nn.SiLU(),
+            num_experts=config.n_experts,
+            top_k=config.n_expert_capacity
+        )
+        self.choice = nn.Parameter(torch.empty(config.n_experts, config.d_model))
+        self.dropout = nn.Dropout(config.dropout)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        # Setting a=sqrt(5) in kaiming_uniform is the same as initializing with
+        # uniform(-1/sqrt(in_features), 1/sqrt(in_features)). For details, see
+        # https://github.com/pytorch/pytorch/issues/57109
+        nn.init.kaiming_uniform_(self.choice, a=math.sqrt(5))
+
+    def forward(self, x):
+        # x = x.to(torch.bfloat16)
+        weights = F.softmax(torch.einsum('bsd,ed->bse', x, self.choice), dim=-1) # (batch_size, n_seq_len, n_experts)
+        # k = self.config.block_size * self.config.n_expert_capacity // self.config.n_experts # 1024 * 2 // 8 = 256
+        k_weights, k_idxs = torch.topk(weights, self.config.n_expert_capacity) # (batch_size, n_seq_len, k)
+        # P = F.one_hot(I, num_classes=self.config.block_size).to(x.dtype) # (batch_size, n_experts, k, n_seq_len)
+        # x_in  = torch.einsum('beks,bsd->bekd', P, x) # (batch_size, n_experts, k, d_model)
+        # x_mlp = torch.einsum('beki,edi->bekd', self.silu(torch.einsum('bekd,eod->beko', x_in, self.w1)), self.w2) # (batch_size, n_experts, k, d_model)
+        # x_out = torch.einsum('beks,bek,bekd->bsd', P, G, x_mlp) # (batch_size, n_seq_len, d_model)
+        # x_out = self.dropout(x_out)
+        # print('Scatter MOE', x.dtype, weights.dtype, k_weights.dtype, k_idxs.dtype)
+        x_out = self.mlp(x, k_weights, k_idxs)
+        x_out = self.dropout(x_out)
         return x_out
 
 
@@ -94,7 +133,9 @@ class MyBlock(nn.Module):
                   expand=config.n_expand, conv_bias=config.conv_bias, bias=config.bias)
         if config.enable_mlp:
             self.ln2 = LayerNorm(config.d_model, bias=config.bias)
-            if config.use_sigma_moe:
+            if config.use_scatter_moe:
+                self.mlp_or_moe = Scatter_MoE(config)
+            elif config.use_sigma_moe:
                 self.mlp_or_moe = Sigma_MoE(
                     dmodel=config.d_model,
                     n_experts=config.n_experts,
