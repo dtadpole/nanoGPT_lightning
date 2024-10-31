@@ -71,7 +71,7 @@ class FlashMoE(nn.Module):
         nn.init.kaiming_uniform_(self.w2, a=math.sqrt(5))
 
     def forward(self, x):
-        x = x.reshape(x.shape[0], self.block_size * self.n_head, self.d_model // self.n_head) # (batch_size, n_seq_len * n_head, d_model // n_head)
+        x = x.view(x.shape[0], self.block_size * self.n_head, self.d_model // self.n_head) # (batch_size, n_seq_len * n_head, d_model // n_head)
         choice = F.softmax(torch.einsum('bsd,ed->bse', x, self.choice), dim=-1) # (batch_size, n_seq_len * n_head, n_experts)
         k = self.block_size * self.n_head * self.n_expert_capacity // self.n_experts # 1024 * 12 * 4 // 48 = 1024
         G, I = torch.topk(torch.transpose(choice, -1, -2), k) # (batch_size, n_experts, k)
@@ -79,7 +79,7 @@ class FlashMoE(nn.Module):
         x_in  = torch.einsum('beks,bsd->bekd', P, x) # (batch_size, n_experts, k, d_model // n_head)
         x_mlp = torch.einsum('beki,eid->bekd', self.silu(torch.einsum('bekd,edo->beko', x_in, self.w1)), self.w2) # (batch_size, n_experts, k, d_model // n_head)
         x_out = torch.einsum('beks,bek,bekd->bsd', P, G, x_mlp) # (batch_size, n_seq_len * n_head, d_model // n_head)
-        x_out = x_out.reshape(x_out.shape[0], -1, self.d_model)
+        x_out = x_out.view(x_out.shape[0], -1, self.d_model)
         x_out = self.dropout(x_out)
         return x_out
 
