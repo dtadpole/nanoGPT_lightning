@@ -16,19 +16,20 @@ class MyMambaConfig:
     vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     n_layer: int = 12
     d_model: int = 768
-    d_ffn: int = 768 // 4
+    d_ffn: int = 768
     d_state: int = 128
     d_conv: int = 4
     n_expand: int = 2
-    n_experts: int = 16
+    n_head: int = 3
+    n_experts: int = 12
     n_expert_capacity: int = 4
     dropout: float = 0.1
     conv_bias: bool = False
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     use_mamba2: bool = True
     enable_mlp: bool = True
-    use_moe: bool = True
-    use_flash_moe: bool = False
+    use_moe: bool = False
+    use_flash_moe: bool = True
     use_sigma_moe: bool = False
     use_scatter_moe: bool = False
 
