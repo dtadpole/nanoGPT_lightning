@@ -8,6 +8,7 @@ from gpt2 import LayerNorm
 from lightning.fabric.strategies import FSDPStrategy
 from moe_layer_simple import MoE as Sigma_MoE
 from scattermoe.mlp import MLP as Scatter_MLP
+from moe import FlashMoE, MoE
 
 @dataclass
 class MyMambaConfig:
@@ -15,19 +16,20 @@ class MyMambaConfig:
     vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     n_layer: int = 12
     d_model: int = 768
-    d_ffn: int = 768 * 16
+    d_ffn: int = 768 // 4
     d_state: int = 128
     d_conv: int = 4
     n_expand: int = 2
-    n_experts: int = 8
-    n_expert_capacity: int = 2
+    n_experts: int = 16
+    n_expert_capacity: int = 4
     dropout: float = 0.1
     conv_bias: bool = False
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     use_mamba2: bool = True
     enable_mlp: bool = True
     use_moe: bool = True
-    use_sigma_moe: bool = True
+    use_flash_moe: bool = False
+    use_sigma_moe: bool = False
     use_scatter_moe: bool = False
 
 
@@ -46,41 +48,6 @@ class MLP(nn.Module):
         x = self.dropout(x)
         return x
 
-
-class MoE(nn.Module):
-
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.choice = nn.Parameter(torch.empty(config.n_experts, config.d_model))
-        self.w1 = nn.Parameter(torch.empty(config.n_experts, config.d_ffn, config.d_model))
-        self.w2 = nn.Parameter(torch.empty(config.n_experts, config.d_model, config.d_ffn))
-        self.silu = nn.SiLU()
-        self.dropout = nn.Dropout(config.dropout)
-        self.reset_parameters()
-
-    def reset_parameters(self) -> None:
-        # Setting a=sqrt(5) in kaiming_uniform is the same as initializing with
-        # uniform(-1/sqrt(in_features), 1/sqrt(in_features)). For details, see
-        # https://github.com/pytorch/pytorch/issues/57109
-        nn.init.kaiming_uniform_(self.choice, a=math.sqrt(5))
-        nn.init.kaiming_uniform_(self.w1, a=math.sqrt(5))
-        nn.init.kaiming_uniform_(self.w2, a=math.sqrt(5))
-
-    def forward(self, x):
-        choice = F.softmax(torch.einsum('bsd,ed->bse', x, self.choice), dim=-1) # (batch_size, n_seq_len, n_experts)
-        k = self.config.block_size * self.config.n_expert_capacity // self.config.n_experts # 1024 * 2 // 8 = 256
-        G, I = torch.topk(torch.transpose(choice, -1, -2), k) # (batch_size, n_experts, k)
-        P = F.one_hot(I, num_classes=self.config.block_size).to(x.dtype) # (batch_size, n_experts, k, n_seq_len)
-        x_in  = torch.einsum('beks,bsd->bekd', P, x) # (batch_size, n_experts, k, d_model)
-        x_mlp = torch.einsum('beki,edi->bekd', self.silu(torch.einsum('bekd,eod->beko', x_in, self.w1)), self.w2) # (batch_size, n_experts, k, d_model)
-        # x_mlp = torch.einsum('beki,edi->bekd', self.silu(torch.einsum('beks,bsd,eod->beko', P, x, self.w1)), self.w2) # (batch_size, n_experts, k, d_model)
-        # x_e   = torch.einsum('beks,bekd->besd', P, x_mlp) # (batch_size, n_experts, n_seq_len, d_model)
-        # x_out = torch.einsum('beks,bek,besd->bsd', P, G, x_e) # (batch_size, n_seq_len, d_model)
-        x_out = torch.einsum('beks,bek,bekd->bsd', P, G, x_mlp) # (batch_size, n_seq_len, d_model)
-        x_out = self.dropout(x_out)
-        # print('MOE', x.dtype, x_in.dtype, x_out.dtype, x_mlp.dtype, G.dtype, I.dtype, P.dtype)
-        return x_out
 
 class Scatter_MoE(nn.Module):
     def __init__(self, config):
@@ -143,8 +110,23 @@ class MyBlock(nn.Module):
                     k=config.n_expert_capacity,
                     dropout=config.dropout,
                     selection_mode="silu")
+            elif config.use_flash_moe:
+                self.mlp_or_moe = FlashMoE(
+                    d_model=config.d_model,
+                    d_ffn=config.d_ffn,
+                    n_head=config.n_head,
+                    n_experts=config.n_experts,
+                    n_expert_capacity=config.n_expert_capacity,
+                    block_size=config.block_size,
+                    dropout=config.dropout)
             elif config.use_moe:
-                self.mlp_or_moe = MoE(config)
+                self.mlp_or_moe = MoE(
+                    d_model=config.d_model,
+                    d_ffn=config.d_ffn,
+                    n_experts=config.n_experts,
+                    n_expert_capacity=config.n_expert_capacity,
+                    block_size=config.block_size,
+                    dropout=config.dropout)
             else:
                 self.mlp_or_moe = MLP(config)
 
