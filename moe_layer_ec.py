@@ -145,24 +145,9 @@ class MoE(torch.nn.Module):
 
     def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # Selection score calculation
-        sel = sel_raw = F.linear(input, self.expert_sel, None)
-        reg_loss = self.entropy_reg(sel_raw)
-
-        # Selection activation and topk
-        if (not self.activation_after_topk) or (self.selection_mode == "sinkmoid"):
-            # Sinkhorn should be always applied before top-k
-            sel = self.sel_activation(sel)
-
-        if self.training and self.expert_dropout > 0:
-            mask = torch.rand_like(sel) < self.expert_dropout
-            sel = sel.masked_fill(mask, float("-inf"))
-
-        sel_val, sel_index = sel.topk(self.n_heads, dim=-1, sorted=False)
-
-        if self.activation_after_topk or (self.selection_mode == "sinkmoid"):
-            sel_val = torch.gather(sel_raw, -1, sel_index)
-            # for sinkmoid, the score is always calculated by a sigmoid
-            sel_val = torch.sigmoid(sel_val) if self.selection_mode == "sinkmoid" else self.sel_activation(sel_val)
+        sel = sel_raw = F.softmax(F.linear(input, self.expert_sel, None), dim=-1)
+        k = input.shape[-2] * self.n_heads // self.n_experts
+        sel_val, sel_index = torch.topk(torch.transpose(sel, -1, -2), k) # (batch_size, n_experts, k)
 
         # Preprocess the selection indices. They will be needed for both layers and save some time
         sel_indices = cvmm_prepare_sel2(sel_index.int())

@@ -166,3 +166,4 @@ cython_debug/
 log/
 execution_trace.json
 execution_trace_resources/
+.vscode/
