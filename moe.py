@@ -81,7 +81,7 @@ class FlashMoE(nn.Module):
         k = self.block_size * self.n_head * self.n_expert_capacity // self.n_experts # 1024 * 12 * 4 // 48 = 1024
         G, I = torch.topk(torch.transpose(choice, -1, -2), k) # (batch_size, n_experts, k)
         P = F.one_hot(I, num_classes=self.block_size * self.n_head).to(x.dtype) # (batch_size, n_experts, k, n_seq_len * n_head)
-        x_in  = torch.einsum('beks,bsd->bekd', P, x_in) # (batch_size, n_experts, k, d_model // n_head)
+        x_in  = torch.einsum('beks,bsd->bekd', P, x) # (batch_size, n_experts, k, d_model // n_head)
         x_mlp = torch.einsum('beki,eid->bekd', self.silu(torch.einsum('bekd,edo->beko', x_in, self.w1)), self.w2) # (batch_size, n_experts, k, d_model // n_head)
         x_out = torch.einsum('beks,bek,bekd->bsd', P, G, x_mlp) # (batch_size, n_seq_len * n_head, d_model // n_head)
         x_out = self.dropout(x_out)
