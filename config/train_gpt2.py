@@ -10,9 +10,9 @@ args.wandb_run_name = args.arch + '-124M'
 
 # these make the total batch size be ~0.5M
 # 10 batch size * 1024 block size * 32 gradaccum = 163,840 [327,680]
-args.batch_size = 8
+args.batch_size = 4
 args.block_size = 1024
-args.gradient_accumulation_steps = 40
+args.gradient_accumulation_steps = 84
 
 # this makes total number of tokens be 300B
 args.max_iters = 600000 // 4
@@ -21,7 +21,7 @@ args.warmup_iters = 2000
 
 # eval stuff
 args.eval_interval = 2000 // 5
-args.eval_iters = 200
+args.eval_iters = 400
 args.log_interval = 20
 
 # weight decay

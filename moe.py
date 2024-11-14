@@ -44,7 +44,7 @@ class MoE(nn.Module):
 
 class FlashMoE(nn.Module):
 
-    def __init__(self, d_model=768, d_ffn=768, n_head=6, n_experts=24, n_expert_capacity=4, block_size=1024, dropout=0.1):
+    def __init__(self, d_model=768, d_ffn=384, n_head=6, n_experts=24, n_expert_capacity=4, block_size=1024, dropout=0.1):
         super().__init__()
         assert d_model % n_head == 0
         assert n_experts % n_head == 0
@@ -58,6 +58,8 @@ class FlashMoE(nn.Module):
         self.choice = nn.Parameter(torch.empty(n_experts, d_model // n_head))
         self.w1 = nn.Parameter(torch.empty(n_experts, d_model // n_head, d_ffn))
         self.w2 = nn.Parameter(torch.empty(n_experts, d_ffn, d_model // n_head))
+        self.head = nn.Parameter(torch.empty(d_model, d_model))
+        self.merge = nn.Parameter(torch.empty(d_model, d_model))
         self.silu = nn.SiLU()
         self.dropout = nn.Dropout(dropout)
         self.reset_parameters()
@@ -69,8 +71,11 @@ class FlashMoE(nn.Module):
         nn.init.kaiming_uniform_(self.choice, a=math.sqrt(5))
         nn.init.kaiming_uniform_(self.w1, a=math.sqrt(5))
         nn.init.kaiming_uniform_(self.w2, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.head, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.merge, a=math.sqrt(5))
 
     def forward(self, x):
+        x = torch.einsum('bsd,do->bso', x, self.head)
         x = x.view(x.shape[0], self.block_size * self.n_head, self.d_model // self.n_head) # (batch_size, n_seq_len * n_head, d_model // n_head)
         choice = F.softmax(torch.einsum('bsd,ed->bse', x, self.choice), dim=-1) # (batch_size, n_seq_len * n_head, n_experts)
         k = self.block_size * self.n_head * self.n_expert_capacity // self.n_experts # 1024 * 12 * 4 // 48 = 1024
@@ -79,9 +84,12 @@ class FlashMoE(nn.Module):
         x_in  = torch.einsum('beks,bsd->bekd', P, x) # (batch_size, n_experts, k, d_model // n_head)
         x_mlp = torch.einsum('beki,eid->bekd', self.silu(torch.einsum('bekd,edo->beko', x_in, self.w1)), self.w2) # (batch_size, n_experts, k, d_model // n_head)
         x_out = torch.einsum('beks,bek,bekd->bsd', P, G, x_mlp) # (batch_size, n_seq_len * n_head, d_model // n_head)
-        x_out = x_out.view(x_out.shape[0], -1, self.d_model)
         x_out = self.dropout(x_out)
+        x_out = x_out.view(x_out.shape[0], -1, self.d_model)
+        x_out = torch.einsum('bsd,do->bso', x_out, self.merge)
+        # x_out = self.dropout(x_out)
         return x_out
+
 
 if __name__ == '__main__':
     moe = MoE()

@@ -21,7 +21,7 @@ class MyMambaConfig:
     d_conv: int = 4
     n_expand: int = 2
     n_head: int = 3
-    n_experts: int = 12
+    n_experts: int = 48
     n_expert_capacity: int = 4
     dropout: float = 0.1
     conv_bias: bool = False
