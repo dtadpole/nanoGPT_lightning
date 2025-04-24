@@ -196,7 +196,7 @@ def main():
             losses = torch.zeros(args.eval_iters)
             for k in range(args.eval_iters):
                 X, Y = get_batch(fabric, split)
-                _, loss, _ = model(X, Y)
+                _, loss = model(X, Y)
                 losses[k] = loss.item()
             out[split] = losses.mean()
         model.train()
@@ -313,7 +313,7 @@ def main():
                     if args.arch == 'gpt2':
                         logits, loss = model(X, Y)
                     elif args.arch == 'mamba':
-                        logits, loss, _ = model(X, Y)
+                        logits, loss = model(X, Y)
                         # outputs = model(input_ids=X, labels=Y)
                         # loss = outputs.loss
                         # logits = outputs.logits

@@ -157,17 +157,17 @@ class MyMamba(nn.Module):
     def forward(self, x, y):
         # apply embedding
         emb = self.emb(x)
-        loss2 = torch.tensor([0.0], dtype=emb.dtype).to(emb.device)
+        # loss2 = torch.tensor([0.0], dtype=emb.dtype).to(emb.device)
         # apply blocks
         for block in self.blocks:
             emb, _loss = block(emb)
-            if _loss is not None:
-                loss2 += _loss
+            # if _loss is not None:
+            #     loss2 += _loss
 
         logits = self.head(emb)  # Changed from x to emb
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1), ignore_index=-1)
 
-        return logits, loss, loss2 / self.config.n_layer / self.config.n_experts
+        return logits, loss # , loss2 / self.config.n_layer / self.config.n_experts
 
     def estimate_mfu(self, fabric, fwdbwd_per_iter, dt):
         return 0.0
