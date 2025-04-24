@@ -7,7 +7,7 @@ from mamba_ssm import Mamba, Mamba2
 from gpt2 import LayerNorm
 from lightning.fabric.strategies import FSDPStrategy
 from moe_layer_simple import MoE as Sigma_MoE
-from scattermoe.mlp import MLP as Scatter_MLP
+# from scattermoe.mlp import MLP as Scatter_MLP
 from moe import FlashMoE, MoE
 
 @dataclass
