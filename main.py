@@ -30,6 +30,7 @@ import lightning as L
 from lightning.fabric.accelerators import find_usable_cuda_devices
 from gpt2 import GPT2, GPTConfig
 from mamba import MyMamba, MyMambaConfig
+from ngpt import NGPT, NGPTConfig
 from torch.profiler import profile, record_function, ProfilerActivity, ExecutionTraceObserver
 from deepspeed.profiling.flops_profiler.profiler import FlopsProfiler
 # from fvcore.nn import FlopCountAnalysis
@@ -160,6 +161,9 @@ def main():
     elif args.arch == 'mamba':
         config = MyMambaConfig()
         model = MyMamba(config)
+    elif args.arch == 'ngpt':
+        config = NGPTConfig()
+        model = NGPT(config)
     else:
         raise ValueError(f"Invalid architecture: {args.arch}")
     model = model.cuda()
@@ -319,6 +323,8 @@ def main():
                         # logits = outputs.logits
                         # logits = model(X)
                         # loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=-1)
+                    elif args.arch == 'ngpt':
+                        logits, loss = model(X, Y)
 
                 acc_loss.append(loss.item())
                 # acc_loss2.append(loss2.item())
@@ -344,6 +350,10 @@ def main():
         optimizer.step()
         optimizer.zero_grad()
 
+        # we have stepped optimizer, now call normalize_weights if nGPT
+        if args.arch == 'ngpt':
+            model.normalize_weights()
+
         # measure elapsed time
         end_time = time.time()
         dt = end_time - start_time
@@ -368,6 +378,7 @@ def main():
             print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
             if args.wandb_log and fabric.global_rank == 0:
                 # wandb init
+                print("Wandb init...")
                 if (not wandb_inited):
                     import wandb
                     merged_args = {**vars(args), **config.__dict__}

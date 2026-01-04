@@ -20,9 +20,10 @@ args.lr_decay_iters = 600000 // 4
 args.warmup_iters = 2000
 
 # eval stuff
-args.eval_interval = 2000 // 5
-args.eval_iters = 400
+args.eval_interval = 200
+args.eval_iters = 800
 args.log_interval = 20
 
 # weight decay
-args.weight_decay = 1e-1
+# args.weight_decay = 1e-1
+args.weight_decay = 0.0
