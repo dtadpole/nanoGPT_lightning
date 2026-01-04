@@ -378,7 +378,7 @@ def main():
             print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
             if args.wandb_log and fabric.global_rank == 0:
                 # wandb init
-                print("Wandb init...")
+                print("Wandb logging started...")
                 if (not wandb_inited):
                     import wandb
                     merged_args = {**vars(args), **config.__dict__}
