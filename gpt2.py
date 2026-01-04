@@ -71,17 +71,19 @@ class MLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, config.n_expand * config.n_embd , bias=config.bias)
-        self.gelu    = nn.GELU()
-        self.c_proj  = nn.Linear(config.n_expand * config.n_embd, config.n_embd, bias=config.bias)
+        self.w_gate = nn.Linear(config.n_embd, config.n_expand * config.n_embd , bias=config.bias)
+        self.w_up = nn.Linear(config.n_embd, config.n_expand * config.n_embd , bias=config.bias)
+        self.w_down = nn.Linear(config.n_expand * config.n_embd, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
+        self.act = nn.SiLU()
 
     def forward(self, x):
-        x = self.c_fc(x)
-        x = self.gelu(x)
-        x = self.c_proj(x)
-        x = self.dropout(x)
-        return x
+        gate = self.act(self.w_gate(x))
+        up = self.act(self.w_up(x))
+        hidden = gate * up
+        output = self.w_down(hidden)
+        output = self.dropout(output)
+        return output
 
 class ShuffleMLP(nn.Module):
 
