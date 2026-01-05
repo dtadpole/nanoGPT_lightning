@@ -17,7 +17,7 @@ args.gradient_accumulation_steps = 20
 # this makes total number of tokens be 300B
 args.max_iters = 600000 // 4
 args.lr_decay_iters = 600000 // 4
-args.warmup_iters = 2000
+args.warmup_iters = 1000
 
 # eval stuff
 args.eval_interval = 200
@@ -25,5 +25,5 @@ args.eval_iters = 800
 args.log_interval = 20
 
 # weight decay
-# args.weight_decay = 1e-1
-args.weight_decay = 0.0
+args.weight_decay = 1e-1
+# args.weight_decay = 0.0

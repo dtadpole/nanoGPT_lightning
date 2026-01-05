@@ -71,11 +71,21 @@ class MLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
+        self.n_embd = config.n_embd
         self.w_gate = nn.Linear(config.n_embd, config.n_expand * config.n_embd , bias=config.bias)
         self.w_up = nn.Linear(config.n_embd, config.n_expand * config.n_embd , bias=config.bias)
         self.w_down = nn.Linear(config.n_expand * config.n_embd, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
         self.act = nn.SiLU()
+        self._init_weights()
+
+    def _init_weights(self):
+        nn.init.normal_(self.w_gate.weight, mean=0.0, std=math.sqrt(2/self.n_embd))
+        nn.init.normal_(self.w_up.weight, mean=0.0, std=math.sqrt(2/self.n_embd))
+        nn.init.normal_(self.w_down.weight, mean=0.0, std=math.sqrt(2/self.n_embd))
+        nn.init.zeros_(self.w_gate.bias)
+        nn.init.zeros_(self.w_up.bias)
+        nn.init.zeros_(self.w_down.bias)
 
     def forward(self, x):
         gate = self.act(self.w_gate(x))
