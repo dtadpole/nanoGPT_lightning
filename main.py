@@ -56,7 +56,7 @@ parser.add_argument('--strategy', default='auto', type=str,
                     help='strategy (default: auto)')
 parser.add_argument('--profile', action='store_true', help='profile')
 # learning rate
-parser.add_argument('--lr', '--learning-rate', default=6e-4, type=float,
+parser.add_argument('--lr', '--learning-rate', default=3e-4, type=float,
                     metavar='LR', help='initial learning rate', dest='learning_rate')
 parser.add_argument('--min-lr', default=6e-5, type=float,
                     metavar='min_lr', help='mean learning rate')
