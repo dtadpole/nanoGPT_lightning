@@ -67,6 +67,23 @@ class CausalSelfAttention(nn.Module):
         y = self.resid_dropout(self.c_proj(y))
         return y
 
+
+class MLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.c_fc    = nn.Linear(config.d_model, config.d_ffn, bias=config.bias)
+        self.silu    = nn.SiLU()
+        self.c_proj  = nn.Linear(config.d_ffn, config.d_model, bias=config.bias)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x):
+        x = self.c_fc(x)
+        x = self.silu(x)
+        x = self.c_proj(x)
+        x = self.dropout(x)
+        return x
+
+"""
 class MLP(nn.Module):
 
     def __init__(self, config):
@@ -94,6 +111,7 @@ class MLP(nn.Module):
         output = self.w_down(hidden)
         output = self.dropout(output)
         return output
+"""
 
 class ShuffleMLP(nn.Module):
 
