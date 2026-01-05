@@ -71,9 +71,9 @@ class CausalSelfAttention(nn.Module):
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.d_model, config.d_ffn, bias=config.bias)
+        self.c_fc    = nn.Linear(config.n_embd, config.n_embd * config.n_expand, bias=config.bias)
         self.silu    = nn.SiLU()
-        self.c_proj  = nn.Linear(config.d_ffn, config.d_model, bias=config.bias)
+        self.c_proj  = nn.Linear(config.n_embd * config.n_expand, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
