@@ -178,21 +178,48 @@ class MyMamba(nn.Module):
         self.blocks = nn.ModuleList()
         for _ in range(config.n_layer):
             self.blocks.append(MyBlock(config))
+        self.ln_f = LayerNorm(config.d_model, bias=config.bias)
 
-    def forward(self, x, y):
+        # init all weights
+        self.apply(self._init_weights)
+        # apply special scaled init to residual projections
+        for pn, p in self.named_parameters():
+            if pn.endswith('c_proj.weight') or pn.endswith('w_down.weight'):
+                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
+
+    def get_num_params(self, non_embedding=True):
+        """Return the number of parameters in the model."""
+        n_params = sum(p.numel() for p in self.parameters())
+        if non_embedding and not self.config.weight_tying:
+            n_params -= self.emb.weight.numel()
+        return n_params
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def forward(self, x, y=None):
         # apply embedding
         emb = self.emb(x)
-        # loss2 = torch.tensor([0.0], dtype=emb.dtype).to(emb.device)
         # apply blocks
         for block in self.blocks:
             emb, _loss = block(emb)
-            # if _loss is not None:
-            #     loss2 += _loss
 
-        logits = self.head(emb)  # Changed from x to emb
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1), ignore_index=-1)
+        emb = self.ln_f(emb)
 
-        return logits, loss # , loss2 / self.config.n_layer / self.config.n_experts
+        if y is not None:
+            logits = self.head(emb)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1), ignore_index=-1)
+        else:
+            # inference: only compute logits for last position
+            logits = self.head(emb[:, [-1], :])
+            loss = None
+
+        return logits, loss
 
     def estimate_mfu(self, fabric, fwdbwd_per_iter, dt):
         return 0.0
@@ -202,7 +229,7 @@ class MyMamba(nn.Module):
         if isinstance(fabric.strategy, FSDPStrategy):
             N = N * fabric.world_size
         cfg = self.config
-        L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.block_size
+        L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.d_model//cfg.n_head, cfg.block_size
         flops_per_token = 6*N + 12*L*H*Q*T
         flops_per_fwdbwd = flops_per_token * T
         return flops_per_fwdbwd

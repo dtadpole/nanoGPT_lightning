@@ -104,7 +104,7 @@ class GatedMLP(nn.Module):
 
     def forward(self, x):
         gate = self.act(self.w_gate(x))
-        up = self.act(self.w_up(x))
+        up = self.w_up(x)  # No activation on up branch - standard SwiGLU
         hidden = gate * up
         output = self.w_down(hidden)
         output = self.dropout(output)
@@ -209,7 +209,7 @@ class GPTConfig:
     gated_mlp = True
     conv_mlp = False
     shuffle_mlp = False
-    weight_tying = False
+    weight_tying = True
 
 class GPT2(nn.Module):
 
@@ -235,7 +235,7 @@ class GPT2(nn.Module):
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
         for pn, p in self.named_parameters():
-            if pn.endswith('c_proj.weight'):
+            if pn.endswith('c_proj.weight') or pn.endswith('w_down.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
 
         # report number of parameters
