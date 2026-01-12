@@ -274,7 +274,8 @@ class NGPTConfig:
     n_expand: int = 4  # MLP expansion factor
     dropout: float = 0.0  # nGPT doesn't use dropout (representations are normalized)
     bias: bool = False  # nGPT doesn't use bias
-    use_sqk_scaling: bool = False    
+    use_sqk_scaling: bool = False
+    weight_tying: bool = True  # Share weights between wte and lm_head
 
 
 class NGPT(nn.Module):
@@ -307,6 +308,10 @@ class NGPT(nn.Module):
         self.s_z = nn.Parameter(torch.ones(config.vocab_size))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
+        # Weight tying: share weights between token embeddings and output head
+        if config.weight_tying:
+            self.wte.weight = self.lm_head.weight
+
         # Initialize weights
         self._init_weights()
         
@@ -320,8 +325,10 @@ class NGPT(nn.Module):
             self.normalize_weights_first_time = False
             print("Normalizing weights for the first time...")
         # Normalize embeddings and output head
-        self.wte.weight.data.copy_(l2_normalize(self.wte.weight.data, 1))         # V, n_embd
+        # When weight_tying is enabled, wte and lm_head share the same weight tensor (lm_head is master)
         self.lm_head.weight.data.copy_(l2_normalize(self.lm_head.weight.data, 1))   # V, n_embd
+        if not self.config.weight_tying:
+            self.wte.weight.data.copy_(l2_normalize(self.wte.weight.data, 1))         # V, n_embd
         
         for layer_idx in range(0, self.config.n_layer):
             block = self.blocks[layer_idx]
@@ -339,17 +346,20 @@ class NGPT(nn.Module):
     def get_num_params(self, non_embedding=True):
         """Return the number of parameters in the model."""
         n_params = sum(p.numel() for p in self.parameters())
-        if non_embedding:
+        if non_embedding and not self.config.weight_tying:
             n_params -= self.wte.weight.numel()
         return n_params
 
     def _init_weights(self):
         # NVIDIA uses std = 1/sqrt(n_embd) for weight initialization
         std = 1.0 / math.sqrt(self.config.n_embd)
-        nn.init.normal_(self.wte.weight, mean=0.0, std=std)
-        self.wte.weight.data.copy_(l2_normalize(self.wte.weight.data, 1))
+        # When weight_tying is enabled, lm_head is the master weight (wte shares it)
         nn.init.normal_(self.lm_head.weight, mean=0.0, std=std)
         self.lm_head.weight.data.copy_(l2_normalize(self.lm_head.weight.data, 1))
+        # Only initialize wte separately if not using weight tying
+        if not self.config.weight_tying:
+            nn.init.normal_(self.wte.weight, mean=0.0, std=std)
+            self.wte.weight.data.copy_(l2_normalize(self.wte.weight.data, 1))
 
     def forward(self, idx, targets=None):
         device = idx.device
