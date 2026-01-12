@@ -87,9 +87,9 @@ class NormalizedCausalSelfAttention(nn.Module):
         self.v_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
 
-        # Learnable attention temperature (s_qk)
+        # Learnable attention temperature (s_qk) - one scalar per head as per paper
         # Q and K are L2-normalized, so this controls attention sharpness
-        self.s_qk = nn.Parameter(torch.ones(self.n_embd) * math.sqrt(self.head_dim))
+        self.s_qk = nn.Parameter(torch.ones(self.n_head) * math.sqrt(self.head_dim))
         
         # Flash attention support
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -128,15 +128,14 @@ class NormalizedCausalSelfAttention(nn.Module):
         q, k = apply_rotary_position_embeddings(sinusoidal_pos, q, k)
         # q, k remain (B, n_head, T, head_dim) after RoPE
 
-        sqk = self.s_qk.view(1, self.n_head, 1, self.head_dim)
+        sqk = self.s_qk.view(1, self.n_head, 1, 1)  # (1, n_head, 1, 1) - broadcasts across head_dim
 
         # Normalize Q and K (key innovation of nGPT)
         q = sqk * l2_normalize(q, dim=-1)
         k = sqk * l2_normalize(k, dim=-1)
         
-        # Compute attention with learnable temperature s_qk
-        sqrt_head_dim = (self.head_dim) ** 0.5
-        softmax_scale = sqrt_head_dim
+        # Compute attention - scaling is already handled by s_qk
+        softmax_scale = 1.0
 
         if self.flash:
             # Flash attention
