@@ -283,10 +283,9 @@ class NGPT(nn.Module):
         self.blocks = nn.ModuleList([NormalizedBlock(config, i) for i in range(config.n_layer)])
 
         # Output head with normalized weights
-        # Note: weight tying with wte will be handled specially
         self.s_z = torch.nn.Parameter(torch.ones(config.vocab_size, dtype=torch.float32) * math.sqrt(config.n_embd))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        
+
         # Initialize weights
         self._init_weights()
         
