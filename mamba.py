@@ -33,6 +33,7 @@ class MyMambaConfig:
     use_sigma_moe: bool = False
     use_scatter_moe: bool = False
     weight_tying: bool = True
+    gated_mlp: bool = True
 
 
 class MLP(nn.Module):
@@ -47,6 +48,24 @@ class MLP(nn.Module):
         x = self.c_fc(x)
         x = self.silu(x)
         x = self.c_proj(x)
+        x = self.dropout(x)
+        return x
+
+
+class GatedMLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.w_gate = nn.Linear(config.d_model, config.d_ffn, bias=config.bias)
+        self.w_up = nn.Linear(config.d_model, config.d_ffn, bias=config.bias)
+        self.w_down = nn.Linear(config.d_ffn, config.d_model, bias=config.bias)
+        self.dropout = nn.Dropout(config.dropout)
+        self.act = nn.SiLU()
+
+    def forward(self, x):
+        gate = self.act(self.w_gate(x))
+        up = self.w_up(x)
+        hidden = gate * up
+        x = self.w_down(hidden)
         x = self.dropout(x)
         return x
 
@@ -129,6 +148,8 @@ class MyBlock(nn.Module):
                     n_expert_capacity=config.n_expert_capacity,
                     block_size=config.block_size,
                     dropout=config.dropout)
+            elif config.gated_mlp:
+                self.mlp_or_moe = GatedMLP(config)
             else:
                 self.mlp_or_moe = MLP(config)
 
