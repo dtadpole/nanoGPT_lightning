@@ -90,7 +90,8 @@ class NormalizedCausalSelfAttention(nn.Module):
         # Learnable attention scaling (s_qk) - per dimension as per paper/NVIDIA
         # Applied to both Q and K, creating a weighted dot product
         # Shape: (n_embd,) which can be viewed as (n_head, head_dim)
-        self.s_qk = nn.Parameter(torch.ones(config.n_embd))
+        if self.use_sqk_scaling:
+            self.s_qk = nn.Parameter(torch.ones(config.n_embd))
         
         # Flash attention support
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -137,10 +138,11 @@ class NormalizedCausalSelfAttention(nn.Module):
 
         # s_qk scales per-dimension, applied to both Q and K (per paper/NVIDIA)
         # This creates a weighted dot product: att[i,j] = Σ_d (s_qk[d]² * q[i,d] * k[j,d])
-        # Reshape s_qk from (n_embd,) to (1, n_head, 1, head_dim) for broadcasting
-        sqk = self.s_qk.view(1, self.n_head, 1, self.head_dim)
-        q = q * sqk
-        k = k * sqk
+        if self.use_sqk_scaling:
+            # Reshape s_qk from (n_embd,) to (1, n_head, 1, head_dim) for broadcasting
+            sqk = self.s_qk.view(1, self.n_head, 1, self.head_dim)
+            q = q * sqk
+            k = k * sqk
 
         # Base scaling: sqrt(head_dim) compensates for normalized dot product having small variance
         # s_qk (init 1.0) provides additional learnable scaling on top
@@ -272,7 +274,7 @@ class NGPTConfig:
     n_expand: int = 4  # MLP expansion factor
     dropout: float = 0.0  # nGPT doesn't use dropout (representations are normalized)
     bias: bool = False  # nGPT doesn't use bias
-    use_sqk_scaling: bool = True    
+    use_sqk_scaling: bool = False    
 
 
 class NGPT(nn.Module):
