@@ -103,10 +103,12 @@ class NormalizedCausalSelfAttention(nn.Module):
 
 
     def _init_weights(self):
-        nn.init.normal_(self.q_proj.weight, mean=0.0, std=0.02)
-        nn.init.normal_(self.k_proj.weight, mean=0.0, std=0.02)
-        nn.init.normal_(self.v_proj.weight, mean=0.0, std=0.02)
-        nn.init.normal_(self.c_proj.weight, mean=0.0, std=0.02)
+        # NVIDIA uses std = 1/sqrt(n_embd) for weight initialization
+        std = 1.0 / math.sqrt(self.n_embd)
+        nn.init.normal_(self.q_proj.weight, mean=0.0, std=std)
+        nn.init.normal_(self.k_proj.weight, mean=0.0, std=std)
+        nn.init.normal_(self.v_proj.weight, mean=0.0, std=std)
+        nn.init.normal_(self.c_proj.weight, mean=0.0, std=std)
         self.q_proj.weight.data.copy_(l2_normalize(self.q_proj.weight.data, 1))
         self.k_proj.weight.data.copy_(l2_normalize(self.k_proj.weight.data, 1))
         self.v_proj.weight.data.copy_(l2_normalize(self.v_proj.weight.data, 1))
@@ -176,41 +178,49 @@ class NormalizedCausalSelfAttention(nn.Module):
 class NormalizedMLP(nn.Module):
     """
     Normalized Gated MLP (SwiGLU) for nGPT.
-    
+
     Uses SiLU-gated linear units with normalized weight matrices.
-    Formula: hidden = (u · s_u) ⊙ σ(g · s_g)
-             output = s_d · (W_down · hidden)
+    Combined projection (c_fc) for gate and up, matching NVIDIA implementation.
+    Formula: uv = c_fc(x) * s_uv
+             hidden = u * silu(v)
+             output = w_down(hidden)
     """
 
     def __init__(self, config):
         super().__init__()
-        hidden_dim = config.n_expand * config.n_embd
+        self.hidden_dim = config.n_expand * config.n_embd
         self.n_embd = config.n_embd
-        
-        # Normalized linear layers
-        self.w_gate = nn.Linear(config.n_embd, hidden_dim, bias=False)
-        self.w_up = nn.Linear(config.n_embd, hidden_dim, bias=False)
-        self.w_down = nn.Linear(hidden_dim, config.n_embd, bias=False)
 
-        self.scale_factor = math.sqrt(config.n_embd)
-        
-        # SiLU activation for the gate
+        # Combined projection for u and v - outputs 2 * hidden_dim
+        self.c_fc = nn.Linear(config.n_embd, 2 * self.hidden_dim, bias=False)
+        self.w_down = nn.Linear(self.hidden_dim, config.n_embd, bias=False)
+
+        # Learnable scaling factors for combined u+v (s_uv per NVIDIA)
+        # Shape: (2 * hidden_dim) - first half for u, second half for v
+        # Initialized to 1.0, multiplied by sqrt(n_embd) in forward
+        self.s_uv = nn.Parameter(torch.ones(2 * self.hidden_dim))
+        self.base_scale = math.sqrt(config.n_embd)
+
+        # SiLU activation
         self.act = nn.SiLU()
         self._init_weights()
 
     def _init_weights(self):
-        nn.init.normal_(self.w_gate.weight, mean=0.0, std=0.02)
-        nn.init.normal_(self.w_up.weight, mean=0.0, std=0.02)
-        nn.init.normal_(self.w_down.weight, mean=0.0, std=0.02)
-        self.w_gate.weight.data.copy_(l2_normalize(self.w_gate.weight.data, 1))
-        self.w_up.weight.data.copy_(l2_normalize(self.w_up.weight.data, 1))
+        # NVIDIA uses std = 1/sqrt(n_embd) for weight initialization
+        std = 1.0 / math.sqrt(self.n_embd)
+        nn.init.normal_(self.c_fc.weight, mean=0.0, std=std)
+        nn.init.normal_(self.w_down.weight, mean=0.0, std=std)
+        # Normalize c_fc along input dimension (each row is a unit vector)
+        self.c_fc.weight.data.copy_(l2_normalize(self.c_fc.weight.data, 1))
         self.w_down.weight.data.copy_(l2_normalize(self.w_down.weight.data, 0))
 
     def forward(self, x):
-        # Gated MLP: hidden = (u · s_u) ⊙ σ(g · s_g)
-        gate = self.act(self.w_gate(x) * self.scale_factor)
-        up = self.w_up(x) * self.scale_factor
-        hidden = gate * up
+        # Combined projection with scaling
+        uv = self.c_fc(x) * (self.s_uv * self.base_scale)
+        # Split into u and v (NVIDIA convention: u * silu(v))
+        u, v = uv.chunk(2, dim=-1)
+        # Gated MLP: hidden = u * silu(v) (matching NVIDIA)
+        hidden = u * self.act(v)
         # Down projection and normalize (nGPT requires normalized outputs)
         x = self.w_down(hidden)
         x = l2_normalize(x, dim=-1)
@@ -320,8 +330,7 @@ class NGPT(nn.Module):
             block.attn.c_proj.weight.data.copy_(l2_normalize(block.attn.c_proj.weight.data, 1))             # n_embd, n_embd
             
             # MLP weights
-            block.mlp.w_gate.weight.data.copy_(l2_normalize(block.mlp.w_gate.weight.data, 1))               # hidden, n_embd
-            block.mlp.w_up.weight.data.copy_(l2_normalize(block.mlp.w_up.weight.data, 1))                   # hidden, n_embd
+            block.mlp.c_fc.weight.data.copy_(l2_normalize(block.mlp.c_fc.weight.data, 1))                   # 2*hidden, n_embd
             block.mlp.w_down.weight.data.copy_(l2_normalize(block.mlp.w_down.weight.data, 0))               # n_embd, hidden
 
     def get_num_params(self, non_embedding=True):
@@ -332,9 +341,11 @@ class NGPT(nn.Module):
         return n_params
 
     def _init_weights(self):
-        nn.init.normal_(self.wte.weight, mean=0.0, std=0.02)
+        # NVIDIA uses std = 1/sqrt(n_embd) for weight initialization
+        std = 1.0 / math.sqrt(self.config.n_embd)
+        nn.init.normal_(self.wte.weight, mean=0.0, std=std)
         self.wte.weight.data.copy_(l2_normalize(self.wte.weight.data, 1))
-        nn.init.normal_(self.lm_head.weight, mean=0.0, std=0.02)
+        nn.init.normal_(self.lm_head.weight, mean=0.0, std=std)
         self.lm_head.weight.data.copy_(l2_normalize(self.lm_head.weight.data, 1))
 
     def forward(self, idx, targets=None):
