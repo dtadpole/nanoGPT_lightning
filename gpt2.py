@@ -67,7 +67,6 @@ class CausalSelfAttention(nn.Module):
         y = self.resid_dropout(self.c_proj(y))
         return y
 
-
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -83,8 +82,7 @@ class MLP(nn.Module):
         x = self.dropout(x)
         return x
 
-"""
-class MLP(nn.Module):
+class GatedMLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
@@ -94,15 +92,15 @@ class MLP(nn.Module):
         self.w_down = nn.Linear(config.n_expand * config.n_embd, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
         self.act = nn.SiLU()
-        self._init_weights()
+        # self._init_weights()
 
-    def _init_weights(self):
-        nn.init.normal_(self.w_gate.weight, mean=0.0, std=math.sqrt(2/self.n_embd))
-        nn.init.normal_(self.w_up.weight, mean=0.0, std=math.sqrt(2/self.n_embd))
-        nn.init.normal_(self.w_down.weight, mean=0.0, std=math.sqrt(2/self.n_embd))
-        nn.init.zeros_(self.w_gate.bias)
-        nn.init.zeros_(self.w_up.bias)
-        nn.init.zeros_(self.w_down.bias)
+    # def _init_weights(self):
+    #     nn.init.normal_(self.w_gate.weight, mean=0.0, std=math.sqrt(2/self.n_embd))
+    #     nn.init.normal_(self.w_up.weight, mean=0.0, std=math.sqrt(2/self.n_embd))
+    #     nn.init.normal_(self.w_down.weight, mean=0.0, std=math.sqrt(2/self.n_embd))
+    #     nn.init.zeros_(self.w_gate.bias)
+    #     nn.init.zeros_(self.w_up.bias)
+    #     nn.init.zeros_(self.w_down.bias)
 
     def forward(self, x):
         gate = self.act(self.w_gate(x))
@@ -111,7 +109,6 @@ class MLP(nn.Module):
         output = self.w_down(hidden)
         output = self.dropout(output)
         return output
-"""
 
 class ShuffleMLP(nn.Module):
 
@@ -183,7 +180,9 @@ class Block(nn.Module):
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
-        if config.conv_mlp:
+        if config.gated_mlp:
+            self.mlp = GatedMLP(config)
+        elif config.conv_mlp:
             self.mlp = ConvMLP(config)
         elif config.shuffle_mlp:
             self.mlp = ShuffleMLP(config)
@@ -207,6 +206,7 @@ class GPTConfig:
     n_kernel: int = 1
     dropout: float = 0.1
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    gated_mlp = True
     conv_mlp = False
     shuffle_mlp = False
 
