@@ -17,8 +17,11 @@ args.gradient_accumulation_steps = 5
 # this makes total number of tokens be 300B
 args.max_iters = 100000 # 600000 // 4
 args.lr_decay_iters = 100000 # 600000 // 4
-args.warmup_iters = 1000
+# args.warmup_iters = 1000
+args.warmup_iters = 200
 
+# learning rate
+# args.learning_rate = 6e-4
 args.compile = True
 
 # eval stuff

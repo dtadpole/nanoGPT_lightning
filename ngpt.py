@@ -81,11 +81,11 @@ class NormalizedCausalSelfAttention(nn.Module):
         self.use_sqk_scaling = config.use_sqk_scaling
         
         # Q and K projections (scale not used since they get L2-normalized after)
-        self.q_proj = nn.Linear(config.n_embd, config.n_embd)
-        self.k_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.q_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.k_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
         # V and output projections with learnable scale
-        self.v_proj = nn.Linear(config.n_embd, config.n_embd)
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.v_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
 
         # Learnable attention temperature (s_qk)
         # Q and K are L2-normalized, so this controls attention sharpness
@@ -181,9 +181,9 @@ class NormalizedMLP(nn.Module):
         self.n_embd = config.n_embd
         
         # Normalized linear layers
-        self.w_gate = nn.Linear(config.n_embd, hidden_dim)
-        self.w_up = nn.Linear(config.n_embd, hidden_dim)
-        self.w_down = nn.Linear(hidden_dim, config.n_embd)
+        self.w_gate = nn.Linear(config.n_embd, hidden_dim, bias=False)
+        self.w_up = nn.Linear(config.n_embd, hidden_dim, bias=False)
+        self.w_down = nn.Linear(hidden_dim, config.n_embd, bias=False)
 
         self.scale_factor = math.sqrt(config.n_embd)
         

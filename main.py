@@ -276,7 +276,8 @@ def main():
     raw_model = model
     model, optimizer = fabric.setup(model, optimizer)
 
-    # print(model)
+    print(model)
+    print(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
     if args.compile:
         print("compiling the model... (takes a ~minute)")
         model = torch.compile(model)
