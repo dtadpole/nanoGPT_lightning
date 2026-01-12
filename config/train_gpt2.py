@@ -25,5 +25,5 @@ args.eval_iters = 800
 args.log_interval = 20
 
 # weight decay
-args.weight_decay = 1e-1
-# args.weight_decay = 0.0
+# args.weight_decay = 1e-1
+args.weight_decay = 0.0

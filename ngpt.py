@@ -38,15 +38,27 @@ def get_sinusoidal_embeddings( n_positions, dim):
     return sinusoidal_emb
 
 def apply_rotary_position_embeddings(sinusoidal_pos, q, k):
-    # Split the sinusoidal_pos into sin and cos parts
-    sin, cos = sinusoidal_pos.chunk(2, dim=-1)
-    # Apply the rotary embeddings to the query and key
-    q_rot = torch.stack((-q[..., 1::2], q[..., ::2]), dim=-1)
-    k_rot = torch.stack((-k[..., 1::2], k[..., ::2]), dim=-1)
-    q_rot = torch.reshape(q_rot, q.shape[:-1] + (q.shape[-1]//2, 2)) * torch.stack((cos, sin), dim=-1)
-    k_rot = torch.reshape(k_rot, k.shape[:-1] + (k.shape[-1]//2, 2)) * torch.stack((cos, sin), dim=-1)
-    q_rot = torch.reshape(q_rot, q.shape)
-    k_rot = torch.reshape(k_rot, k.shape)
+    # Extract sin and cos from interleaved format (sin at even indices, cos at odd)
+    sin = sinusoidal_pos[..., 0::2]  # (T, head_dim//2)
+    cos = sinusoidal_pos[..., 1::2]  # (T, head_dim//2)
+
+    # Standard RoPE: rotate pairs of dimensions
+    # For each pair (x0, x1), apply rotation:
+    #   x0' = x0 * cos - x1 * sin
+    #   x1' = x0 * sin + x1 * cos
+    q_even, q_odd = q[..., 0::2], q[..., 1::2]
+    k_even, k_odd = k[..., 0::2], k[..., 1::2]
+
+    # Apply rotation
+    q_rot_even = q_even * cos - q_odd * sin
+    q_rot_odd = q_even * sin + q_odd * cos
+    k_rot_even = k_even * cos - k_odd * sin
+    k_rot_odd = k_even * sin + k_odd * cos
+
+    # Interleave back to original shape
+    q_rot = torch.stack([q_rot_even, q_rot_odd], dim=-1).flatten(-2)
+    k_rot = torch.stack([k_rot_even, k_rot_odd], dim=-1).flatten(-2)
+
     return q_rot, k_rot
 
 class NormalizedCausalSelfAttention(nn.Module):
@@ -107,17 +119,16 @@ class NormalizedCausalSelfAttention(nn.Module):
         k = self.k_proj(x)
         v = self.v_proj(x)
         
-        # Reshape to (B, n_head, T, head_dim)
-        q = q.view(B, T, self.n_head, self.head_dim)
-        k = k.view(B, T, self.n_head, self.head_dim)
-        v = v.view(B, T, self.n_head, self.head_dim)
+        # Reshape to (B, n_head, T, head_dim) for attention
+        q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)  # (B, n_head, T, head_dim)
+        k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)  # (B, n_head, T, head_dim)
+        v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)  # (B, n_head, T, head_dim)
 
         sinusoidal_pos = get_sinusoidal_embeddings(T, self.head_dim).to(device=q.device)
-        q, k = apply_rotary_position_embeddings(sinusoidal_pos, q.transpose(1, 2), k.transpose(1, 2))
-        q = q.transpose(2, 1)
-        k = k.transpose(2, 1)
+        q, k = apply_rotary_position_embeddings(sinusoidal_pos, q, k)
+        # q, k remain (B, n_head, T, head_dim) after RoPE
 
-        sqk = self.s_qk.view(1, 1, self.n_head, self.head_dim)
+        sqk = self.s_qk.view(1, self.n_head, 1, self.head_dim)
 
         # Normalize Q and K (key innovation of nGPT)
         q = sqk * l2_normalize(q, dim=-1)
