@@ -91,6 +91,13 @@ parser.add_argument('-p', '--log-interval', default=5, type=int,
                     metavar='N', help='log interval (default: 5)')
 parser.add_argument('-g', '--gpu', default=None, type=str,
                     metavar='GPU', help='gpu (default None)')
+parser.add_argument('--eval-interval', default=200, type=int,
+                    help='evaluation interval (default: 200)')
+parser.add_argument('--wandb-log', action='store_true', help='enable wandb logging')
+parser.add_argument('--wandb-project', default='gpt2', type=str,
+                    help='wandb project name (default: gpt2)')
+parser.add_argument('--wandb-run-name', default=None, type=str,
+                    help='wandb run name (default: auto-generated)')
 
 
 
@@ -156,13 +163,22 @@ def main():
 
     # model
     if args.arch == 'gpt2':
-        config = GPTConfig()
+        config = GPTConfig(
+            block_size=args.block_size,
+            dropout=args.dropout,
+        )
         model = GPT2(config)
     elif args.arch == 'mamba':
-        config = MyMambaConfig()
+        config = MyMambaConfig(
+            block_size=args.block_size,
+            dropout=args.dropout,
+        )
         model = MyMamba(config)
     elif args.arch == 'ngpt':
-        config = NGPTConfig()
+        config = NGPTConfig(
+            block_size=args.block_size,
+            dropout=args.dropout,
+        )
         model = NGPT(config)
     else:
         raise ValueError(f"Invalid architecture: {args.arch}")
@@ -315,17 +331,7 @@ def main():
 
             with fabric.no_backward_sync(model, enabled=is_accumulating):
                 with fabric.autocast():
-                    if args.arch == 'gpt2':
-                        logits, loss = model(X, Y)
-                    elif args.arch == 'mamba':
-                        logits, loss = model(X, Y)
-                        # outputs = model(input_ids=X, labels=Y)
-                        # loss = outputs.loss
-                        # logits = outputs.logits
-                        # logits = model(X)
-                        # loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=-1)
-                    elif args.arch == 'ngpt':
-                        logits, loss = model(X, Y)
+                    logits, loss = model(X, Y)
 
                 acc_loss.append(loss.item())
                 # acc_loss2.append(loss2.item())
@@ -353,7 +359,7 @@ def main():
 
         # we have stepped optimizer, now call normalize_weights if nGPT
         if args.arch == 'ngpt':
-            model.normalize_weights()
+            raw_model.normalize_weights()
 
         # measure elapsed time
         end_time = time.time()

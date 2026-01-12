@@ -292,6 +292,7 @@ class NGPT(nn.Module):
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
 
 
+    @torch.no_grad()
     def normalize_weights(self):
         if self.normalize_weights_first_time:
             self.normalize_weights_first_time = False
