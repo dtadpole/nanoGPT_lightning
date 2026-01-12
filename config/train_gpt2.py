@@ -18,7 +18,7 @@ args.gradient_accumulation_steps = 10
 args.max_iters = 100000 # 600000 // 4
 args.lr_decay_iters = 100000 # 600000 // 4
 # args.warmup_iters = 1000
-args.warmup_iters = 200
+args.warmup_iters = 500
 
 # learning rate
 # args.learning_rate = 6e-4
