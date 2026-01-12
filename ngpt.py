@@ -87,9 +87,10 @@ class NormalizedCausalSelfAttention(nn.Module):
         self.v_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
 
-        # Learnable attention temperature (s_qk) - one scalar per head as per paper
-        # Q and K are L2-normalized, so this controls attention sharpness
-        self.s_qk = nn.Parameter(torch.ones(self.n_head) * math.sqrt(self.head_dim))
+        # Learnable attention scaling (s_qk) - per dimension as per paper/NVIDIA
+        # Applied to both Q and K, creating a weighted dot product
+        # Shape: (n_embd,) which can be viewed as (n_head, head_dim)
+        self.s_qk = nn.Parameter(torch.ones(config.n_embd))
         
         # Flash attention support
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -128,14 +129,20 @@ class NormalizedCausalSelfAttention(nn.Module):
         q, k = apply_rotary_position_embeddings(sinusoidal_pos, q, k)
         # q, k remain (B, n_head, T, head_dim) after RoPE
 
-        sqk = self.s_qk.view(1, self.n_head, 1, 1)  # (1, n_head, 1, 1) - broadcasts across head_dim
-
         # Normalize Q and K (key innovation of nGPT)
-        q = sqk * l2_normalize(q, dim=-1)
-        k = sqk * l2_normalize(k, dim=-1)
-        
-        # Compute attention - scaling is already handled by s_qk
-        softmax_scale = 1.0
+        q = l2_normalize(q, dim=-1)
+        k = l2_normalize(k, dim=-1)
+
+        # s_qk scales per-dimension, applied to both Q and K (per paper/NVIDIA)
+        # This creates a weighted dot product: att[i,j] = Σ_d (s_qk[d]² * q[i,d] * k[j,d])
+        # Reshape s_qk from (n_embd,) to (1, n_head, 1, head_dim) for broadcasting
+        sqk = self.s_qk.view(1, self.n_head, 1, self.head_dim)
+        q = q * sqk
+        k = k * sqk
+
+        # Base scaling: sqrt(head_dim) compensates for normalized dot product having small variance
+        # s_qk (init 1.0) provides additional learnable scaling on top
+        softmax_scale = math.sqrt(self.head_dim)
 
         if self.flash:
             # Flash attention
