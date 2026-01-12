@@ -198,7 +198,7 @@ class NormalizedMLP(nn.Module):
         # Learnable scaling factors for combined u+v (s_uv per NVIDIA)
         # Shape: (2 * hidden_dim) - first half for u, second half for v
         # Initialized to 1.0, multiplied by sqrt(n_embd) in forward
-        self.s_uv = nn.Parameter(torch.ones(2 * self.hidden_dim))
+        # self.s_uv = nn.Parameter(torch.ones(2 * self.hidden_dim))
         self.base_scale = math.sqrt(config.n_embd)
 
         # SiLU activation
@@ -216,7 +216,8 @@ class NormalizedMLP(nn.Module):
 
     def forward(self, x):
         # Combined projection with scaling
-        uv = self.c_fc(x) * (self.s_uv * self.base_scale)
+        # uv = self.c_fc(x) * (self.s_uv * self.base_scale)
+        uv = self.c_fc(x) * self.base_scale
         # Split into u and v (NVIDIA convention: u * silu(v))
         u, v = uv.chunk(2, dim=-1)
         # Gated MLP: hidden = u * silu(v) (matching NVIDIA)
