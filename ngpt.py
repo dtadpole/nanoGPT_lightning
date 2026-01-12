@@ -90,8 +90,11 @@ class NormalizedCausalSelfAttention(nn.Module):
         # Learnable attention scaling (s_qk) - per dimension as per paper/NVIDIA
         # Applied to both Q and K, creating a weighted dot product
         # Shape: (n_embd,) which can be viewed as (n_head, head_dim)
+        # NVIDIA-style parameterization: store at 1/sqrt(n_embd), effective value = 1.0
         if self.use_sqk_scaling:
-            self.s_qk = nn.Parameter(torch.ones(config.n_embd))
+            self.sqk_init_value = 1.0
+            self.sqk_init_scaling = 1.0 / math.sqrt(config.n_embd)
+            self.s_qk = nn.Parameter(torch.ones(config.n_embd) * self.sqk_init_scaling)
         
         # Flash attention support
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -139,8 +142,10 @@ class NormalizedCausalSelfAttention(nn.Module):
         # s_qk scales per-dimension, applied to both Q and K (per paper/NVIDIA)
         # This creates a weighted dot product: att[i,j] = Σ_d (s_qk[d]² * q[i,d] * k[j,d])
         if self.use_sqk_scaling:
-            # Reshape s_qk from (n_embd,) to (1, n_head, 1, head_dim) for broadcasting
-            sqk = self.s_qk.view(1, self.n_head, 1, self.head_dim)
+            # NVIDIA-style: multiply stored param by (init_value / init_scaling) to get effective scale
+            sqk_effective = self.s_qk * (self.sqk_init_value / self.sqk_init_scaling)
+            # Reshape from (n_embd,) to (1, n_head, 1, head_dim) for broadcasting
+            sqk = sqk_effective.view(1, self.n_head, 1, self.head_dim)
             q = q * sqk
             k = k * sqk
 
@@ -192,6 +197,7 @@ class NormalizedMLP(nn.Module):
         super().__init__()
         self.hidden_dim = config.n_expand * config.n_embd
         self.n_embd = config.n_embd
+        self.use_suv_scaling = config.use_suv_scaling
 
         # Combined projection for u and v - outputs 2 * hidden_dim
         self.c_fc = nn.Linear(config.n_embd, 2 * self.hidden_dim, bias=False)
@@ -199,8 +205,12 @@ class NormalizedMLP(nn.Module):
 
         # Learnable scaling factors for combined u+v (s_uv per NVIDIA)
         # Shape: (2 * hidden_dim) - first half for u, second half for v
-        # Initialized to 1.0, multiplied by sqrt(n_embd) in forward
-        # self.s_uv = nn.Parameter(torch.ones(2 * self.hidden_dim))
+        # NVIDIA-style parameterization: store at 1/sqrt(n_embd), effective value = 1.0
+        # Then multiplied by sqrt(n_embd) in forward for base scaling
+        if self.use_suv_scaling:
+            self.suv_init_value = 1.0
+            self.suv_init_scaling = 1.0 / math.sqrt(config.n_embd)
+            self.s_uv = nn.Parameter(torch.ones(2 * self.hidden_dim) * self.suv_init_scaling)
         self.base_scale = math.sqrt(config.n_embd)
 
         # SiLU activation
@@ -218,8 +228,12 @@ class NormalizedMLP(nn.Module):
 
     def forward(self, x):
         # Combined projection with scaling
-        # uv = self.c_fc(x) * (self.s_uv * self.base_scale)
-        uv = self.c_fc(x) * self.base_scale
+        if self.use_suv_scaling:
+            # NVIDIA-style: compute effective s_uv, then multiply by base_scale
+            suv_effective = self.s_uv * (self.suv_init_value / self.suv_init_scaling)
+            uv = self.c_fc(x) * (suv_effective * self.base_scale)
+        else:
+            uv = self.c_fc(x) * self.base_scale
         # Split into u and v (NVIDIA convention: u * silu(v))
         u, v = uv.chunk(2, dim=-1)
         # Gated MLP: hidden = u * silu(v) (matching NVIDIA)
@@ -244,23 +258,28 @@ class NormalizedBlock(nn.Module):
         super().__init__()
         self.attn = NormalizedCausalSelfAttention(config)
         self.mlp = NormalizedMLP(config)
-        
+
         # Learnable scaling factors for residual updates (α_a and α_m in paper)
-        # Initialized small to start with small updates
-        # α = 1/sqrt(2*n_layer) is a good initialization
-        self.scale_factor = 1.0 / math.sqrt(2 * config.n_layer)
-        self.alpha_attn = nn.Parameter(torch.ones(config.n_embd) * self.scale_factor)
-        self.alpha_mlp = nn.Parameter(torch.ones(config.n_embd) * self.scale_factor)
+        # NVIDIA-style parameterization: store at 1/sqrt(n_embd) scale for better Adam optimization
+        # Effective value at init = 1/sqrt(2*n_layer) ≈ 0.204 for 12 layers
+        self.alpha_init_value = 1.0 / math.sqrt(2 * config.n_layer)
+        self.alpha_init_scaling = 1.0 / math.sqrt(config.n_embd)
+        self.alpha_attn = nn.Parameter(torch.ones(config.n_embd) * self.alpha_init_scaling)
+        self.alpha_mlp = nn.Parameter(torch.ones(config.n_embd) * self.alpha_init_scaling)
 
     def forward(self, x):
         # Input x should already be normalized (on unit hypersphere)
-        
+
+        # Compute effective alpha: stored_param * (init_value / init_scaling)
+        alpha_attn = self.alpha_attn * (self.alpha_init_value / self.alpha_init_scaling)
+        alpha_mlp = self.alpha_mlp * (self.alpha_init_value / self.alpha_init_scaling)
+
         # Attention update: h = normalize(h + α_a ⊙ Attn(h_a - h))
-        x = l2_normalize(x + self.alpha_attn * (self.attn(x) - x), dim=-1)
-        
+        x = l2_normalize(x + alpha_attn * (self.attn(x) - x), dim=-1)
+
         # MLP update: h = normalize(h + α_m ⊙ MLP(h_m - h))
-        x = l2_normalize(x + self.alpha_mlp * (self.mlp(x) - x), dim=-1)
-        
+        x = l2_normalize(x + alpha_mlp * (self.mlp(x) - x), dim=-1)
+
         return x
 
 
@@ -275,6 +294,7 @@ class NGPTConfig:
     dropout: float = 0.0  # nGPT doesn't use dropout (representations are normalized)
     bias: bool = False  # nGPT doesn't use bias
     use_sqk_scaling: bool = False
+    use_suv_scaling: bool = False
     weight_tying: bool = True  # Share weights between wte and lm_head
 
 
@@ -291,7 +311,7 @@ class NGPT(nn.Module):
         assert config.block_size is not None
         self.config = config
 
-        self.normalize_weights_first_time = True
+        self.normalize_weights_print_count = 5
 
         # Normalized embeddings
         # Learnable scaling for combining token and position embeddings
@@ -303,9 +323,11 @@ class NGPT(nn.Module):
         self.blocks = nn.ModuleList([NormalizedBlock(config, i) for i in range(config.n_layer)])
 
         # Output head with normalized weights
-        # s_z is a learnable per-token scaling factor (initialized to 1.0)
-        # Per-token scaling allows different tokens to have different "confidence" levels
-        self.s_z = nn.Parameter(torch.ones(config.vocab_size))
+        # s_z is a learnable per-token scaling factor
+        # NVIDIA-style parameterization: store at 1/sqrt(n_embd) scale for better Adam optimization
+        # Effective value at init = (1/sqrt(n_embd)) * sqrt(n_embd) = 1.0
+        self.s_z_init_scaling = 1.0 / math.sqrt(config.n_embd)
+        self.s_z = nn.Parameter(torch.ones(config.vocab_size) * self.s_z_init_scaling)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
         # Weight tying: share weights between token embeddings and output head
@@ -321,9 +343,9 @@ class NGPT(nn.Module):
 
     @torch.no_grad()
     def normalize_weights(self):
-        if self.normalize_weights_first_time:
-            self.normalize_weights_first_time = False
-            print("Normalizing weights for the first time...")
+        if self.normalize_weights_print_count > 0:
+            self.normalize_weights_print_count -= 1
+            print(f"Normalizing weights... ({5 - self.normalize_weights_print_count}/5)")
         # Normalize embeddings and output head
         # When weight_tying is enabled, wte and lm_head share the same weight tensor (lm_head is master)
         self.lm_head.weight.data.copy_(l2_normalize(self.lm_head.weight.data, 1))   # V, n_embd
@@ -378,9 +400,9 @@ class NGPT(nn.Module):
             x = block(x)
         
         # x is already normalized from the last block
-        # Scale logits: sqrt(n_embd) for base scaling (since normalized dot product is in [-1,1])
-        # s_z is learnable temperature on top of that
-        logit_scale = math.sqrt(self.config.n_embd) * self.s_z
+        # NVIDIA-style: multiply stored param by sqrt(n_embd) to get effective scale
+        # At init: (1/sqrt(n_embd)) * sqrt(n_embd) = 1.0
+        logit_scale = self.s_z * math.sqrt(self.config.n_embd)
         if targets is not None:
             # Compute logits
             logits = self.lm_head(x) * logit_scale
