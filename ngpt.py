@@ -350,7 +350,7 @@ class NGPT(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:
             # Inference: only compute for last position
-            logits = self.lm_head(x[:, [-1], :])
+            logits = self.lm_head(x[:, [-1], :]) * self.s_z
             loss = None
 
         return logits, loss
