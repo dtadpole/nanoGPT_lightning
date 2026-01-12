@@ -7,6 +7,43 @@ import torch.nn as nn
 from torch.nn import functional as F
 from lightning.fabric.strategies.fsdp import FSDPStrategy
 
+
+def get_sinusoidal_embeddings(n_positions, dim):
+    """Generate sinusoidal positional embeddings for RoPE."""
+    position = torch.arange(n_positions, dtype=torch.float).unsqueeze(1)
+    div_term = torch.exp(torch.arange(0, dim, 2).float() * (-math.log(10000.0) / dim))
+    sinusoidal_emb = torch.zeros((n_positions, dim))
+    sinusoidal_emb[:, 0::2] = torch.sin(position * div_term)
+    sinusoidal_emb[:, 1::2] = torch.cos(position * div_term)
+    return sinusoidal_emb
+
+
+def apply_rotary_position_embeddings(sinusoidal_pos, q, k):
+    """Apply rotary position embeddings to query and key tensors."""
+    # Extract sin and cos from interleaved format (sin at even indices, cos at odd)
+    sin = sinusoidal_pos[..., 0::2]  # (T, head_dim//2)
+    cos = sinusoidal_pos[..., 1::2]  # (T, head_dim//2)
+
+    # Standard RoPE: rotate pairs of dimensions
+    # For each pair (x0, x1), apply rotation:
+    #   x0' = x0 * cos - x1 * sin
+    #   x1' = x0 * sin + x1 * cos
+    q_even, q_odd = q[..., 0::2], q[..., 1::2]
+    k_even, k_odd = k[..., 0::2], k[..., 1::2]
+
+    # Apply rotation
+    q_rot_even = q_even * cos - q_odd * sin
+    q_rot_odd = q_even * sin + q_odd * cos
+    k_rot_even = k_even * cos - k_odd * sin
+    k_rot_odd = k_even * sin + k_odd * cos
+
+    # Interleave back to original shape
+    q_rot = torch.stack([q_rot_even, q_rot_odd], dim=-1).flatten(-2)
+    k_rot = torch.stack([k_rot_even, k_rot_odd], dim=-1).flatten(-2)
+
+    return q_rot, k_rot
+
+
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
 
@@ -32,6 +69,7 @@ class CausalSelfAttention(nn.Module):
         self.resid_dropout = nn.Dropout(config.dropout)
         self.n_head = config.n_head
         self.n_embd = config.n_embd
+        self.head_dim = config.n_embd // config.n_head
         self.dropout = config.dropout
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -46,9 +84,13 @@ class CausalSelfAttention(nn.Module):
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
+
+        # Apply RoPE to queries and keys
+        sinusoidal_pos = get_sinusoidal_embeddings(T, self.head_dim).to(device=q.device)
+        q, k = apply_rotary_position_embeddings(sinusoidal_pos, q, k)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
@@ -221,7 +263,6 @@ class GPT2(nn.Module):
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
@@ -244,13 +285,10 @@ class GPT2(nn.Module):
     def get_num_params(self, non_embedding=True):
         """
         Return the number of parameters in the model.
-        For non-embedding count (default), the position embeddings get subtracted.
-        The token embeddings would too, except due to the parameter sharing these
-        params are actually used as weights in the final layer, so we include them.
+        With RoPE, there are no learned position embeddings to subtract.
+        The token embeddings are shared with lm_head when weight_tying is enabled.
         """
         n_params = sum(p.numel() for p in self.parameters())
-        if non_embedding:
-            n_params -= self.transformer.wpe.weight.numel()
         return n_params
 
     def _init_weights(self, module):
@@ -265,12 +303,10 @@ class GPT2(nn.Module):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
 
-        # forward the GPT model itself
+        # forward the GPT model itself (RoPE handles position encoding in attention)
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
-        x = self.transformer.drop(tok_emb + pos_emb)
+        x = self.transformer.drop(tok_emb)
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
@@ -290,9 +326,9 @@ class GPT2(nn.Module):
         # model surgery to decrease the block size if necessary
         # e.g. we may load the GPT2 pretrained model checkpoint (block size 1024)
         # but want to use a smaller block size for some smaller, simpler model
+        # With RoPE, no position embeddings to crop - only update causal mask if present
         assert block_size <= self.config.block_size
         self.config.block_size = block_size
-        self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])
         for block in self.transformer.h:
             if hasattr(block.attn, 'bias'):
                 block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
