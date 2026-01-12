@@ -32,6 +32,7 @@ class MyMambaConfig:
     use_flash_moe: bool = False
     use_sigma_moe: bool = False
     use_scatter_moe: bool = False
+    weight_tying: bool = True
 
 
 class MLP(nn.Module):
@@ -150,6 +151,9 @@ class MyMamba(nn.Module):
         self.config = config
         self.emb = nn.Embedding(config.vocab_size, config.d_model)
         self.head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+        if config.weight_tying:
+            # Weight tying: share weights between token embeddings and output head
+            self.emb.weight = self.head.weight
         self.blocks = nn.ModuleList()
         for _ in range(config.n_layer):
             self.blocks.append(MyBlock(config))
