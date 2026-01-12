@@ -282,7 +282,9 @@ class NGPT(nn.Module):
         self.blocks = nn.ModuleList([NormalizedBlock(config, i) for i in range(config.n_layer)])
 
         # Output head with normalized weights
-        self.s_z = torch.nn.Parameter(torch.ones(config.vocab_size, dtype=torch.float32) * math.sqrt(config.n_embd))
+        # s_z is a learnable per-token scaling factor (initialized to 1.0)
+        # Per-token scaling allows different tokens to have different "confidence" levels
+        self.s_z = nn.Parameter(torch.ones(config.vocab_size))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
         # Initialize weights
@@ -345,13 +347,16 @@ class NGPT(nn.Module):
             x = block(x)
         
         # x is already normalized from the last block
+        # Scale logits: sqrt(n_embd) for base scaling (since normalized dot product is in [-1,1])
+        # s_z is learnable temperature on top of that
+        logit_scale = math.sqrt(self.config.n_embd) * self.s_z
         if targets is not None:
             # Compute logits
-            logits = self.lm_head(x) * self.s_z
+            logits = self.lm_head(x) * logit_scale
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:
             # Inference: only compute for last position
-            logits = self.lm_head(x[:, [-1], :]) * self.s_z
+            logits = self.lm_head(x[:, [-1], :]) * logit_scale
             loss = None
 
         return logits, loss
