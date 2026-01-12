@@ -159,10 +159,11 @@ class NormalizedCausalSelfAttention(nn.Module):
             y = att @ v
         # Reshape back
         y = y.transpose(1, 2).contiguous().view(B, T, C)
-        
-        # Output projection
+
+        # Output projection and normalize (nGPT requires normalized outputs)
         y = self.c_proj(y)
-        
+        y = l2_normalize(y, dim=-1)
+
         return y
 
 
@@ -204,8 +205,9 @@ class NormalizedMLP(nn.Module):
         gate = self.act(self.w_gate(x) * self.scale_factor)
         up = self.w_up(x) * self.scale_factor
         hidden = gate * up
-        # Down projection
+        # Down projection and normalize (nGPT requires normalized outputs)
         x = self.w_down(hidden)
+        x = l2_normalize(x, dim=-1)
         return x
 
 
