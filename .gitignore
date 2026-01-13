@@ -167,3 +167,4 @@ log/
 execution_trace.json
 execution_trace_resources/
 .vscode/
+.claude/
